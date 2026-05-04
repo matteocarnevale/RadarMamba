@@ -6,10 +6,17 @@
 
 dataset:
   name: radial
-  # Path to raw downloaded data (set after download)
-  raw_path: data/raw/radial
-  # Path where preprocessed .npz files will be saved
-  processed_path: data/processed/radial
+  # ── Server paths ─────────────────────────────────────────────────
+  # Dataset raw:        /media/data/matteo-carnevale/dataset/RADIal
+  # Preprocessed .npz:  /media/data/matteo-carnevale/dataset/RADIal_processed
+  # Override dalla CLI: python scripts/train.py --config configs/radial.yaml
+  #                     dataset.raw_path=/new/path
+  # ─────────────────────────────────────────────────────────────────
+  raw_path: /media/data/matteo-carnevale/dataset/RADIal
+  processed_path: /media/data/matteo-carnevale/dataset/RADIal_processed
+
+  # CalibrationTable.npy per AoA beamforming (da SignalProcessing/ del repo RADIal)
+  calib_table_path: /media/data/matteo-carnevale/dataset/RADIal/CalibrationTable.npy
 
   # -----------------------------------------------------------
   # Train / Test split (paper: 81 train, 10 test)

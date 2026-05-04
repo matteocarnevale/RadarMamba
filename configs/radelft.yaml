@@ -6,8 +6,8 @@
 
 dataset:
   name: radelft
-  raw_path: data/raw/radelft
-  processed_path: data/processed/radelft
+  raw_path: /media/data/matteo-carnevale/dataset/RaDelft
+  processed_path: /media/data/matteo-carnevale/dataset/RaDelft_processed
 
   # -----------------------------------------------------------
   # Train / Test split (paper follows RaDelft original split)

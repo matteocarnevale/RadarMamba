@@ -46,10 +46,11 @@ def build_dataset(cfg, split: str):
         )
     elif name == "radial":
         from src.datasets.radial_dataset import RADIalDataset
+        # RADIal usa i .npz pre-processati da preprocess_radial.py
+        # Esegui prima: python scripts/preprocess_radial.py --config configs/radial.yaml
         return RADIalDataset(
-            root_dir=cfg.dataset.raw_path,
+            processed_path=cfg.dataset.processed_path,
             mode=split,
-            processing_mode="fft_only",
         )
     else:
         raise ValueError(f"Dataset sconosciuto: {name}")
@@ -77,7 +78,7 @@ def axes_for_dataset(cfg):
     elif name == "radial":
         from src.alignment.voxelization import Voxelizer
         v = Voxelizer.for_radial()
-        return v.range_axis, v.azimuth_axis, v.elevation_axis
+        return v.range_axis, v.azimuth_axis, v.elevation_axis   # (480,) (736,) (11,)
     else:
         raise ValueError(f"Dataset sconosciuto: {name}")
 

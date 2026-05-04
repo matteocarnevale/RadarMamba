@@ -211,11 +211,13 @@ class RadarMambaUNet(nn.Module):
 def build_model_for_radial() -> RadarMambaUNet:
     """
     Costruisce il modello con parametri per RADIal.
-    Grid: [R=480, A=736, E=11], RAD map: D=64 (doppler bins disponibili).
+    Grid: [R=480, A=736, E=11]
+    RAD map: D=16 (Doppler bins ridotti dopo aggregazione in preprocess_radial.py:
+             256 chirps / 16 chirps per TX loop = 16 bin Doppler effettivi)
     """
     return RadarMambaUNet(
         radar_channels=6,
-        doppler_bins=64,
+        doppler_bins=16,     # D=16 dalla RAD map ridotta
         base_channels=64,
         n_elevation_bins=11,
         n_encoder_blocks=3,
