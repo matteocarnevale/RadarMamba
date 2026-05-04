@@ -26,16 +26,24 @@ import numpy as np
 
 def radelft_default_axes() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Restituisce gli assi non-uniformi del RaDelft come in get_default_params().
+    Restituisce gli assi NON-UNIFORMI del RaDelft come in get_default_params().
     Unità: range in metri, azimuth/elevation in RADIANTI.
 
     REF: RaDelft::get_default_params()
+
+    NOTA SULLE DIMENSIONI:
+        Il radarCube grezzo dal dataset ha forma [R=500, D=128, A=240].
+        In get_default_params(), range_axis usa [10:-3] → 487 bin, ma questo
+        è l'asse per la voxelizzazione del LiDAR (copre l'intervallo fisicamente
+        valido). Il cubo radar grezzo ha 500 bin (incluse le celle marginali).
+        Per far coincidere cubo radar e GT voxelizzato, usiamo 500 bin nel range_axis
+        (i primi 500 valori dell'asse continuo, cioè da 0.1004m a ~50.2m).
     """
-    # Range axis
+    # Range axis — 500 bin per matchare esattamente radarCube.shape[0]
     range_cell_size = 0.1004
     max_range       = 51.4242
-    range_axis      = np.arange(range_cell_size, max_range + range_cell_size, range_cell_size)
-    range_axis      = range_axis[10:-3]   # ~487 bins
+    range_axis_full = np.arange(range_cell_size, max_range + range_cell_size, range_cell_size)
+    range_axis      = range_axis_full[:500]   # 500 bin = shape del radarCube
 
     # Azimuth axis (antenna spacing = 0.4972 × λ)
     angle_fft_size = 256

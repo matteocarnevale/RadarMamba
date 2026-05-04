@@ -34,30 +34,34 @@ dataset:
     n_adc_samples: 512
 
   # -----------------------------------------------------------
-  # 4D Radar cube dimensions (paper Section 4.1)
-  # Grid: [R, A, E] = [512, 256, 34]
+  # 4D Radar cube dimensions — dimensioni REALI dei dati
+  #
+  # Paper Section 4.1 cita [512, 256, 34] che è la versione
+  # ZERO-PADDED del repo RaDelft originale.
+  # I dati effettivi sono [R=500, A=240, E=34] (shape di radarCube).
+  # Usiamo le dimensioni reali: più efficiente, stessa griglia fisica.
   # -----------------------------------------------------------
   grid:
-    R: 512
-    A: 256
-    E: 34
+    R: 500      # = radarCube.shape[0]  (paper usa 512 con zero-pad)
+    A: 240      # = radarCube.shape[2] = len(azimuth_axis 240 bin)
+    E: 34       # = len(elevation_axis 34 bin fisici)
 
     range_min_m: 0.0
-    range_max_m: 50.0
+    range_max_m: 50.2   # = 500 × 0.1004 m (range_cell_size × R)
 
-    azimuth_min_deg: -70.0
-    azimuth_max_deg:  70.0
+    azimuth_min_deg:   -70.0   # approssimazione fisica (FoV radar RaDelft)
+    azimuth_max_deg:    70.0
 
     elevation_min_deg: -15.0
     elevation_max_deg:  15.0
 
   # -----------------------------------------------------------
-  # RAD map
+  # RAD map (Range-Azimuth-Doppler)
   # -----------------------------------------------------------
   rad_map:
-    R: 512
-    A: 256
-    D: 128     # TODO: verify Doppler bins from RaDelft data
+    R: 500
+    A: 240
+    D: 128     # vel_fft_size = 128 (da data_preparation.py::get_default_params)
 
   temporal:
     n_frames: 3

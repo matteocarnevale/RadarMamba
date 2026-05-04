@@ -4,41 +4,49 @@ RaDelft Dataset — PyTorch Dataset (versione temporale, 3 frame)
 REF: https://github.com/RaDelft/RaDelft-Dataset
      machine_learning_python/loaders/rad_cube_loader.py::RADCUBE_DATASET_TIME
 
-Struttura attesa sul disco (dall'analisi della repo ufficiale):
+════════════════════════════════════════════════════════════════
+COSA TI SERVE DAL DATASET  (risposta alla domanda)
+════════════════════════════════════════════════════════════════
+NON hai bisogno dell'ADC raw!
+
+Il dataset RaDelft fornisce dati GIÀ PROCESSATI che corrispondono
+esattamente all'output del "blue path" di Fig. 2 del paper:
+
+  Pow_Frame_{idx}.mat["radarCube"]      → [R=500, D=128, A=240]
+  │  ← già applicate: Range FFT + Doppler FFT + AoA azimuth beamforming
+  │  ← D=128 = Doppler velocity bins
+  │  ← A=240 = azimuth bins dopo DoA beamforming
+
+  Ele_Frame_{idx}.mat["elevationIndex"] → [R=500, A=240]
+  │  ← per ogni cella (r, a): indice del bin di elevation dominante (0-33)
+  │  ← E=34 bin fisici di elevation, prodotto dalla DoA in elevation
+
+  rosDS/rslidar_points_clean/*.npy      → (N, 3) [x, y, z]
+     ← LiDAR GIÀ GROUND-REMOVED con Patchwork++ (non applicarlo di nuovo!)
+     ← Formato rs_lidar_clean: reshape(-1, 3) direttamente
+
+Da questi 3 file costruiamo:
+  tensor [R=500, A=240, E=34, 2]  (intensity, normalized_velocity) per frame
+  tensor [R=500, A=240, E=34, 6]  dopo fusione temporale 3 frame (input modello)
+  RAD map [R=500, A=240, D=128]   (input Doppler backbone)
+  GT occ  [R=500, A=240, E=34]    dal LiDAR voxelizzato
+
+════════════════════════════════════════════════════════════════
+Struttura cartelle del dataset:
     data/raw/radelft/
     └── Scene{N}/
         ├── RadarCubes/
-        │   ├── Pow_Frame_{idx}.mat       → radarCube: [R=500, D=128, A=240] float32
-        │   ├── Ele_Frame_{idx}.mat       → elevationIndex: [R=500, A=240] float32
-        │   ├── DopFold_Frame_{idx}.mat   → velocità Doppler unfolded (opzionale)
-        │   └── timestamps.mat            → frame_num_to_timestamp["unixDateTime"]
+        │   ├── Pow_Frame_{idx}.mat   → radarCube: [500, 128, 240] float32
+        │   ├── Ele_Frame_{idx}.mat   → elevationIndex: [500, 240] float32
+        │   ├── DopFold_Frame_{idx}.mat (opzionale)
+        │   └── timestamps.mat        → unixDateTime[frame_num-1][0] in secondi
         └── rosDS/
-            ├── rslidar_points_clean/
-            │   └── {timestamp_sec}.{ns}.npy   → (N, 3) float32 [x, y, z]  (GiÀ GROUND-REMOVED)
-            └── ueye_left_image_rect_color/     (immagini camera, non usate)
+            ├── rslidar_points_clean/ → *.npy (N,3) float32 [x,y,z] GIÀ PULITO
+            └── ueye_left_image_rect_color/ (non usata)
 
-Formato input per Radar-Mamba:
-    - radar_cube: (6, R, A, E) float32   ← 3 frame × [power, elevation_idx]
-    - rad_map:    (D, R, A)   float32   ← RAD map del frame corrente (t)
-    - lidar_occ:  (R, A, E)   float32   ← GT occupancy dal LiDAR (solo per il frame t)
-
-Costruzione del tensore [R, A, E, 2] dal cube RaDelft:
-    power:     Pow_Frame.mat["radarCube"]         [R=500, D=128, A=240], / 8998.5576
-    elevation: Ele_Frame.mat["elevationIndex"]    [R=500, A=240], / 34  (normalizzato 0-1)
-
-    Per ogni cella (r, a):
-        el_bin     = round(elevation[r, a] * E)      ← bin di elevation fisico
-        d_star     = argmax(power[r, :, a])           ← Doppler bin a potenza max
-        intensity  = power[r, d_star, a]
-        velocity   = (d_star - D//2) * vel_bin_size   ← in m/s
-        → tensor_rae2[r, a, el_bin, 0] = intensity (normalizzata)
-        → tensor_rae2[r, a, el_bin, 1] = velocity (normalizzata in [-1,1])
-
-    RAD map: rad_map[r, a, d] = power[r, d, a]  (solo transpose)
-
-Split:
-    Train: Scene 1, 3, 4, 5, 7   (90% di ogni scena)
-    Val:   Scene 1, 3, 4, 5, 7   (10% di ogni scena, ogni 10 frame)
+Split (paper Sec 4.1 + repo RaDelft):
+    Train: Scene 1, 3, 4, 5, 7   (90% per scene)
+    Val:   Scene 1, 3, 4, 5, 7   (10% per scene, ogni 10° frame)
     Test:  Scene 2, 6             (tutti i frame)
 """
 
@@ -46,7 +54,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import scipy.io
@@ -54,27 +61,26 @@ import torch
 from torch.utils.data import Dataset
 
 from src.alignment.voxelization import Voxelizer, radelft_default_axes
-from src.alignment.coordinate_transform import cartesian_to_spherical_rad
 
 
-# Parametri RaDelft da data_preparation.py::get_default_params()
-_VEL_FFT_SIZE  = 128
+# ── Parametri hardware RaDelft (da data_preparation.py::get_default_params) ──
+_VEL_FFT_SIZE  = 128             # bin Doppler (D)
 _VEL_BIN_SIZE  = 0.04607058455831936   # m/s per bin Doppler
-_POWER_NORM    = 8998.5576
-_ELEV_NORM     = 34.0                  # numero bin elevation (normalizzazione)
-_AZIMUTH_OFFSET_DEG = 7.0             # rotazione tra LiDAR e radar (gradi, asse z)
-_X_OFFSET_CM   = 0.0
-_Y_OFFSET_CM   = 0.0
+_POWER_NORM    = 8998.5576       # normalizzazione potenza (max empirico)
+_ELEV_N_BINS   = 34              # bin fisici di elevation (E)
+_AZIMUTH_OFFSET_DEG = 7.0        # rotazione LiDAR→Radar attorno all'asse z
+_X_OFFSET_M    = 0.0             # traslazione x in metri
+_Y_OFFSET_M    = 0.0             # traslazione y in metri
 
 
-def _get_timestamps_and_paths(directory: str) -> dict[int, str]:
+def _get_ts_paths(directory: str) -> dict[int, str]:
     """
     Replica data_preparation.get_timestamps_and_paths.
-    Restituisce {timestamp_ns: filepath} per tutti i .npy in directory.
+    Ritorna {timestamp_ns: path} per ogni .npy nella directory.
     """
     out = {}
     for fname in os.listdir(directory):
-        if fname.endswith(".npy") or fname.endswith(".jpg") or fname.endswith(".mat"):
+        if fname.endswith(".npy"):
             parts = fname.split(".")
             if len(parts) >= 2:
                 try:
@@ -85,133 +91,128 @@ def _get_timestamps_and_paths(directory: str) -> dict[int, str]:
     return out
 
 
-def _closest_timestamp(new_ts: int, ts_dict: dict[int, str]) -> int:
-    """Replica data_preparation.closest_timestamp."""
+def _closest_ts(new_ts: int, ts_dict: dict[int, str]) -> int:
     return min(ts_dict.keys(), key=lambda t: abs(t - new_ts))
 
 
-def _rotation_matrix_z(angle_deg: float) -> np.ndarray:
+def _rot_z(deg: float) -> np.ndarray:
     """Matrice di rotazione 3D attorno all'asse z."""
-    a = np.radians(angle_deg)
-    return np.array([
-        [np.cos(a), -np.sin(a), 0],
-        [np.sin(a),  np.cos(a), 0],
-        [0,          0,         1],
-    ])
+    a = np.radians(deg)
+    return np.array([[np.cos(a), -np.sin(a), 0],
+                     [np.sin(a),  np.cos(a), 0],
+                     [0,          0,         1]], dtype=np.float64)
 
 
 class RaDelftDataset(Dataset):
     """
     Dataset PyTorch per RaDelft — versione temporale (3 frame consecutivi).
-    Replica la logica di RADCUBE_DATASET_TIME dal repo ufficiale.
+    Replica RADCUBE_DATASET_TIME adattato per Radar-Mamba.
+
+    NON ha bisogno di ADC raw: usa Pow_Frame + Ele_Frame + LiDAR clean.
     """
 
-    # Split ufficiali (paper Radar-Mamba Section 4.1 + repo RaDelft)
     TRAIN_SCENES = [1, 3, 4, 5, 7]
     TEST_SCENES  = [2, 6]
 
     def __init__(
         self,
-        dataset_path: str | Path,
-        mode: str = "train",         # "train" | "val" | "test"
-        n_frames: int = 3,           # finestra temporale (paper: 3)
-        normalize_velocity: bool = True,
-        vel_max_mps: float = 5.0,    # clipping velocità per normalizzazione
+        dataset_path:       str | Path,
+        mode:               str   = "train",   # "train" | "val" | "test"
+        n_frames:           int   = 3,
+        normalize_velocity: bool  = True,
+        vel_max_mps:        float = 5.0,       # clipping per normalizzazione Doppler
         transform=None,
     ) -> None:
-        """
-        Args:
-            dataset_path: root del dataset (es. data/raw/radelft/).
-            mode:         split.
-            n_frames:     numero di frame per finestra temporale (default 3).
-            normalize_velocity: normalizza Doppler in [-1, 1].
-            vel_max_mps:  massima velocità per normalizzazione.
-        """
-        assert mode in ("train", "val", "test"), f"mode deve essere train/val/test, ricevuto: {mode}"
+        assert mode in ("train", "val", "test")
 
-        self.root        = Path(dataset_path)
-        self.mode        = mode
-        self.n_frames    = n_frames
-        self.norm_vel    = normalize_velocity
-        self.vel_max     = vel_max_mps
-        self.transform   = transform
+        self.root     = Path(dataset_path)
+        self.mode     = mode
+        self.n_frames = n_frames
+        self.norm_vel = normalize_velocity
+        self.vel_max  = vel_max_mps
+        self.transform = transform
 
-        # Assi fisici RaDelft (non-uniformi)
-        self.range_axis, self.azimuth_axis, self.elevation_axis = radelft_default_axes()
-        self.E = len(self.elevation_axis)   # 34
-        self.R = len(self.range_axis)       # ~487
-        self.A = len(self.azimuth_axis)     # 240
-        self.D = _VEL_FFT_SIZE              # 128
+        # Assi fisici non-uniformi RaDelft
+        self.range_axis, self.az_axis, self.el_axis = radelft_default_axes()
+        self.R = len(self.range_axis)   # 500
+        self.A = len(self.az_axis)      # 240
+        self.E = len(self.el_axis)      # 34
+        self.D = _VEL_FFT_SIZE          # 128
 
-        # Voxelizzatore per il LiDAR
-        self.voxelizer = Voxelizer(self.range_axis, self.azimuth_axis, self.elevation_axis)
+        # Voxelizzatore: LiDAR cartesiano → occupancy [R, A, E]
+        self.voxelizer = Voxelizer(self.range_axis, self.az_axis, self.el_axis)
 
-        # Costruisci l'indice dei campioni
+        # Matrice di rotazione calibrazione LiDAR→Radar
+        self._R_mat = _rot_z(_AZIMUTH_OFFSET_DEG)
+
+        # Costruisci indice dei campioni
         scenes = self.TRAIN_SCENES if mode in ("train", "val") else self.TEST_SCENES
         self.samples = self._build_index(scenes)
 
     # ------------------------------------------------------------------
-    # Costruzione dell'indice
+    # Indice dei campioni (gruppi di 3 frame consecutivi)
     # ------------------------------------------------------------------
 
-    def _build_index(self, scenes: list[int]) -> list[dict]:
+    def _build_index(self, scenes: list[int]) -> list[list[dict]]:
         """
-        Replica la logica di RADCUBE_DATASET_TIME.__init__ per costruire
-        i gruppi di 3 frame consecutivi.
+        Replica RADCUBE_DATASET_TIME.__init__:
+        Raggruppa i frame in triplet [t-2, t-1, t] consecutive.
         """
-        aux_frames  = []   # lista di dict per frame singoli
+        aux = []   # lista piatta di frame singoli
 
         for scene_num in scenes:
             scene_dir = self.root / f"Scene{scene_num}"
             cubes_dir = scene_dir / "RadarCubes"
-            rods_dir  = scene_dir / "rosDS"
-            lidar_dir = rods_dir / "rslidar_points_clean"
+            lidar_dir = scene_dir / "rosDS" / "rslidar_points_clean"
 
             if not cubes_dir.exists():
-                raise FileNotFoundError(f"RadarCubes non trovata: {cubes_dir}")
+                import warnings
+                warnings.warn(f"Scene{scene_num} non trovata in {cubes_dir} — saltata")
+                continue
 
-            # Trova tutti i Pow_Frame_X.mat
-            pow_files = [f for f in os.listdir(cubes_dir) if "Pow_Frame" in f]
+            # Frame disponibili
+            pow_files  = [f for f in os.listdir(str(cubes_dir)) if "Pow_Frame" in f]
             frame_nums = sorted([int(f.split("_")[-1].split(".")[0]) for f in pow_files])
+            if not frame_nums:
+                continue
 
-            # Split train/val: 9 train + 1 val ogni 10 frame
+            # Applica split train/val come RADCUBE_DATASET_TIME
+            arr = np.array(frame_nums)
             if self.mode == "train":
-                rem = len(frame_nums) % 30
-                arr = np.array(frame_nums)
-                if rem != 0:
-                    arr = arr[:-rem].reshape(-1, 30)[:, :27].reshape(-1)
-                else:
-                    arr = arr.reshape(-1, 30)[:, :27].reshape(-1)
-                frame_nums = arr.tolist()
+                rem = len(arr) % 30
+                arr = arr[:-rem] if rem else arr
+                arr = arr.reshape(-1, 30)[:, :27].reshape(-1)
             elif self.mode == "val":
-                rem = len(frame_nums) % 30
-                arr = np.array(frame_nums)
-                if rem != 0:
-                    arr = arr[:-rem].reshape(-1, 30)[:, -3:].reshape(-1)
-                else:
-                    arr = arr.reshape(-1, 30)[:, -3:].reshape(-1)
-                frame_nums = arr.tolist()
-            # "test": usa tutti i frame, ma mantieni divisibile per n_frames
+                rem = len(arr) % 30
+                arr = arr[:-rem] if rem else arr
+                arr = arr.reshape(-1, 30)[:, -3:].reshape(-1)
             elif self.mode == "test":
-                rem = len(frame_nums) % self.n_frames
-                if rem != 0:
-                    frame_nums = frame_nums[:-rem]
+                rem = len(arr) % self.n_frames
+                arr = arr[:-rem] if rem else arr
+            frame_nums = arr.tolist()
 
-            # Carica timestamp
-            ts_mat = scipy.io.loadmat(str(cubes_dir / "timestamps.mat"))
-            frame_num_to_ts = ts_mat["unixDateTime"]
+            # Timestamps
+            ts_mat_path = cubes_dir / "timestamps.mat"
+            frame_ts: dict[int, int] = {}
+            if ts_mat_path.exists():
+                mat = scipy.io.loadmat(str(ts_mat_path))["unixDateTime"]
+                for idx in frame_nums:
+                    if idx <= len(mat):
+                        frame_ts[idx] = int(mat[idx - 1][0]) * 10**9
 
-            # Carica mapping timestamp → path LiDAR
-            lidar_ts2path = _get_timestamps_and_paths(str(lidar_dir))
+            # LiDAR timestamp → path
+            lidar_ts2path: dict[int, str] = {}
+            if lidar_dir.exists():
+                lidar_ts2path = _get_ts_paths(str(lidar_dir))
 
             for idx in frame_nums:
-                ts_ns = int(frame_num_to_ts[idx - 1][0]) * 10**9
+                ts_ns = frame_ts.get(idx, idx)
+                lidar_path = ""
+                if lidar_ts2path:
+                    lt = _closest_ts(ts_ns, lidar_ts2path)
+                    lidar_path = lidar_ts2path[lt]
 
-                # Path più vicino nel LiDAR
-                lidar_ts  = _closest_timestamp(ts_ns, lidar_ts2path)
-                lidar_path = lidar_ts2path[lidar_ts]
-
-                aux_frames.append({
+                aux.append({
                     "scene":      scene_num,
                     "frame_idx":  idx,
                     "power_path": str(cubes_dir / f"Pow_Frame_{idx}.mat"),
@@ -220,104 +221,109 @@ class RaDelftDataset(Dataset):
                     "timestamp":  ts_ns,
                 })
 
-        # Raggruppa in triplet di frame consecutivi
-        samples = []
-        for i in range(0, len(aux_frames), self.n_frames):
-            triplet = aux_frames[i: i + self.n_frames]
-            if len(triplet) == self.n_frames:
-                samples.append(triplet)
-
-        return samples
+        # Raggruppa in triplet
+        return [aux[i: i + self.n_frames]
+                for i in range(0, len(aux), self.n_frames)
+                if len(aux[i: i + self.n_frames]) == self.n_frames]
 
     # ------------------------------------------------------------------
-    # Costruzione del tensore [R, A, E, 2] da un singolo frame
+    # Costruzione tensore [R, A, E, 2] da un singolo frame
     # ------------------------------------------------------------------
 
-    def _load_single_frame(self, frame_info: dict) -> tuple[np.ndarray, np.ndarray]:
+    def _load_frame_tensor(self, info: dict) -> tuple[np.ndarray, np.ndarray]:
         """
-        Carica un frame RaDelft e costruisce:
-          tensor_rae2: (R, A, E, 2) — [normalized_intensity, normalized_velocity]
-          rad_map:     (R, A, D)    — power cube trasposto
+        Carica Pow_Frame + Ele_Frame e costruisce:
+          tensor_rae2 : (R=500, A=240, E=34, 2)  [intensity, velocity]
+          rad_map      : (R=500, A=240, D=128)    [power cube trasposto]
 
-        Segue la logica di RADCUBE_DATASET_TIME.__getitem__:
-          power     = radarCube / 8998.5576
-          elevation = elevationIndex / 34   (indice normalizzato ∈ [0, 1])
+        Costruzione (blue path del paper, Sec 3.2):
+          intensity[r,a,e] = power[r, argmax_D(power[r,:,a]), a]  se elevationIndex→e
+          velocity[r,a,e]  = (argmax_D − D//2) × vel_bin_size       normalizzato [-1,1]
         """
-        # Carica i file .mat
-        power_raw = scipy.io.loadmat(frame_info["power_path"])["radarCube"].astype(np.float32)
-        ele_raw   = scipy.io.loadmat(frame_info["ele_path"])["elevationIndex"].astype(np.float32)
+        # Carica il cubo radar (già processato: Range FFT + Doppler FFT + AoA)
+        power = scipy.io.loadmat(info["power_path"])["radarCube"].astype(np.float32)
+        ele   = scipy.io.loadmat(info["ele_path"])["elevationIndex"].astype(np.float32)
 
         # Normalizzazione come nel repo RaDelft
-        power = power_raw / _POWER_NORM       # (R, D, A)
-        # NaN elevation → imposta a 17.0 (indice medio) poi normalizza
-        ele   = np.nan_to_num(ele_raw, nan=17.0) / _ELEV_NORM   # (R, A), ∈ [0, 1]
+        # REF: RADCUBE_DATASET_TIME.__getitem__
+        power = power / _POWER_NORM                              # (R=500, D=128, A=240)
+        ele   = np.nan_to_num(ele, nan=17.0) / float(_ELEV_N_BINS)  # (R=500, A=240) ∈[0,1]
 
-        R_raw, D, A_raw = power.shape
+        R_raw, D, A_raw = power.shape    # (500, 128, 240)
 
-        # ── RAD map ────────────────────────────────────────────────────
-        # rad_map[r, a, d] = power[r, d, a]
-        rad_map = power.transpose(0, 2, 1).astype(np.float32)   # (R, A, D)
+        # ── RAD map: trasponi [R, D, A] → [R, A, D] ──────────────────
+        rad_map = power.transpose(0, 2, 1).copy()               # (500, 240, 128)
 
-        # ── Tensore [R, A, E, 2] ───────────────────────────────────────
-        # Per ogni cella (r, a):
-        #   el_bin  = round(ele[r, a] * E)   → bin fisico elevation
-        #   d_star  = argmax(power[r, :, a]) → bin Doppler a max potenza
-        #   intensity = power[r, d_star, a]  (già normalizzata)
-        #   velocity  = (d_star - D//2) * vel_bin_size  → in m/s
-
-        tensor_rae2 = np.zeros((R_raw, A_raw, self.E, 2), dtype=np.float32)
-
-        # Vettorizzato: D_star per ogni (r, a)
-        d_star    = np.argmax(power, axis=1)                     # (R, A)
+        # ── Tensore [R, A, E, 2] ──────────────────────────────────────
+        # Vettorizzato: per ogni (r, a) trova il bin Doppler più forte
+        d_star    = np.argmax(power, axis=1)                     # (R, A) — bin Doppler
         intensity = power[np.arange(R_raw)[:, None],
                           d_star,
-                          np.arange(A_raw)[None, :]]              # (R, A)
+                          np.arange(A_raw)[None, :]]             # (R, A)
 
-        velocity  = (d_star.astype(np.float32) - D // 2) * _VEL_BIN_SIZE   # (R, A) m/s
-
-        # Normalizza velocità in [-1, 1]
+        # Velocità in m/s e normalizzazione
+        velocity = (d_star.astype(np.float32) - D / 2.0) * _VEL_BIN_SIZE   # (R, A)
         if self.norm_vel:
             velocity = np.clip(velocity / self.vel_max, -1.0, 1.0)
 
-        # Mappa elevation bin: el_bin ∈ [0, E-1]
-        el_bin = np.round(ele * (self.E - 1)).astype(np.int32)
+        # Elevation bin fisico: round(ele * (E-1))  ∈ [0, E-1]
+        el_bin = np.round(ele * (self._E_max_idx)).astype(np.int32)
         el_bin = np.clip(el_bin, 0, self.E - 1)
 
-        # Assegna i valori ai voxel
-        r_idx = np.arange(R_raw)[:, None]   # (R, 1)
-        a_idx = np.arange(A_raw)[None, :]   # (1, A)
-        tensor_rae2[r_idx, a_idx, el_bin, 0] = intensity   # intensità
-        tensor_rae2[r_idx, a_idx, el_bin, 1] = velocity    # Doppler
+        # Popola il tensore
+        tensor_rae2 = np.zeros((R_raw, A_raw, self.E, 2), dtype=np.float32)
+        r_idx = np.arange(R_raw)[:, None]       # (R, 1) broadcast
+        a_idx = np.arange(A_raw)[None, :]       # (1, A) broadcast
+        tensor_rae2[r_idx, a_idx, el_bin, 0] = intensity
+        tensor_rae2[r_idx, a_idx, el_bin, 1] = velocity
 
         return tensor_rae2, rad_map
 
+    @property
+    def _E_max_idx(self) -> int:
+        return self.E - 1
+
     # ------------------------------------------------------------------
-    # Caricamento LiDAR e GT occupancy
+    # Caricamento GT LiDAR (già ground-removed — NON ri-applicare Patchwork++)
     # ------------------------------------------------------------------
 
     def _load_lidar_gt(self, lidar_path: str) -> np.ndarray:
         """
-        Carica il LiDAR pre-processato (già ground-removed, formato rs_lidar_clean)
-        e lo voxelizza per ottenere la GT occupancy [R, A, E].
+        Carica il LiDAR pre-processato e lo voxelizza.
 
-        Applica calibrazione radar-LiDAR (rotazione + traslazione) come in
-        data_preparation::prepare_lidar_pointcloud.
+        IMPORTANTE: rslidar_points_clean è GIÀ ground-removed!
+        REF: data_preparation.py::clean_and_save_lidar che applica
+             remove_ground_points_patchwork + filtra z>-2 + rimuove ego-car
+             → salvato in rslidar_points_clean PRIMA del training.
+        → NON applicare Patchwork++ qui!
+
+        Formato (rs_lidar_clean):
+            np.load(path) → (N, 3) float32  [x, y, z] cartesiane
+
+        Calibrazione LiDAR→Radar (da data_preparation.py::prepare_lidar_pointcloud):
+            Rotazione di azimuth_offset=7° attorno all'asse z
+            + traslazione x_offset/y_offset (qui entrambi = 0)
         """
-        pts = np.load(lidar_path).reshape(-1, 3).astype(np.float64)  # (N, 3) xyz
+        if not lidar_path or not os.path.exists(lidar_path):
+            return np.zeros((self.R, self.A, self.E), dtype=np.float32)
 
-        # Calibrazione: rotazione attorno z di azimuth_offset + traslazione
-        # REF: data_preparation.transform_point_cloud con azimuth_offset=7°
-        R_mat = _rotation_matrix_z(_AZIMUTH_OFFSET_DEG)
-        pts_rot = pts[:, :3] @ R_mat.T
-        pts_rot[:, 0] += _X_OFFSET_CM / 100.0
-        pts_rot[:, 1] += _Y_OFFSET_CM / 100.0
+        # Leggi il punto cloud pulito
+        pts = np.load(lidar_path)
+        if pts.ndim == 1:
+            pts = pts.reshape(-1, 3)
+        pts = pts[:, :3].astype(np.float64)
 
-        # Voxelizza: Cartesiano → sferico → griglia non-uniforme → (R, A, E)
-        occ = self.voxelizer.voxelize(pts_rot)
+        if len(pts) == 0:
+            return np.zeros((self.R, self.A, self.E), dtype=np.float32)
 
-        # Crop alla dimensione attesa (R_raw potrebbe essere 487, R axis lo dice)
-        occ = occ[:len(self.range_axis), :len(self.azimuth_axis), :]
-        return occ.astype(np.float32)
+        # Calibrazione: rotazione 7° + traslazione
+        # REF: data_preparation.transform_point_cloud(lidar, [0,0,7], [x/100, y/100, 0])
+        pts_cal = pts @ self._R_mat.T
+        pts_cal[:, 0] += _X_OFFSET_M
+        pts_cal[:, 1] += _Y_OFFSET_M
+
+        # Voxelizza: cartesiano → sferico → griglia non-uniforme → (R, A, E)
+        return self.voxelizer.voxelize(pts_cal)
 
     # ------------------------------------------------------------------
     # PyTorch Dataset interface
@@ -327,45 +333,34 @@ class RaDelftDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict:
-        triplet = self.samples[idx]   # lista di n_frames frame_info
+        triplet = self.samples[idx]    # [info_t-2, info_t-1, info_t]
 
-        # Carica i n_frames tensori [R, A, E, 2]
-        frame_tensors = []
-        for frame_info in triplet:
-            t_rae2, rad_map = self._load_single_frame(frame_info)
-            frame_tensors.append(t_rae2)
+        # Carica i 3 frame
+        tensors, _ = [], None
+        for i, info in enumerate(triplet):
+            t, rad = self._load_frame_tensor(info)
+            tensors.append(t)
+            if i == len(triplet) - 1:
+                rad_map_t = rad   # RAD map del frame più recente
 
-        # Fusione temporale: concatena lungo l'asse canali → (R, A, E, 6)
-        # Ordine: [t-2, t-1, t] → canali [0,1]=t-2, [2,3]=t-1, [4,5]=t
-        # (la convexione è [t, t-1, t-2] nel paper Section 3.2)
-        padding = np.zeros_like(frame_tensors[0])
-        while len(frame_tensors) < 3:
-            frame_tensors.insert(0, padding.copy())
+        # Fusione temporale: [t, t-1, t-2] lungo l'asse canali → (R, A, E, 6)
+        # paper: "current and previous two frames" → canali [0,1]=t, [2,3]=t-1, [4,5]=t-2
+        # tensors[0]=t-2, tensors[1]=t-1, tensors[2]=t
+        t2, t1, t0 = tensors[0], tensors[1], tensors[2]   # t-2, t-1, t
+        radar_cube = np.concatenate([t0, t1, t2], axis=-1)  # (R, A, E, 6)
 
-        # frame[0]=t-2, frame[1]=t-1, frame[2]=t (frame più recente = ultimo)
-        radar_cube = np.concatenate(
-            [frame_tensors[2], frame_tensors[1], frame_tensors[0]], axis=-1
-        )  # (R, A, E, 6): canali [I_t, D_t, I_{t-1}, D_{t-1}, I_{t-2}, D_{t-2}]
+        # GT occupancy dal frame più recente
+        lidar_occ = self._load_lidar_gt(triplet[-1]["lidar_path"])  # (R, A, E)
 
-        # RAD map del frame più recente t
-        _, rad_map_t = self._load_single_frame(triplet[-1])   # (R, A, D)
-
-        # GT occupancy dal frame più recente t
-        lidar_occ = self._load_lidar_gt(triplet[-1]["lidar_path"])   # (R, A, E)
-
-        # Converti in tensori PyTorch con shape channel-first
-        radar_cube_t = torch.from_numpy(
-            radar_cube.transpose(3, 0, 1, 2)   # (6, R, A, E)
-        )
-        rad_map_t_tensor = torch.from_numpy(
-            rad_map_t.transpose(2, 0, 1)        # (D, R, A)
-        )
-        lidar_occ_t = torch.from_numpy(lidar_occ)   # (R, A, E)
-
+        # Tensori PyTorch channel-first
         sample = {
-            "radar_cube": radar_cube_t,       # (6, R, A, E)
-            "rad_map":    rad_map_t_tensor,    # (D, R, A)
-            "lidar_occ":  lidar_occ_t,         # (R, A, E)
+            "radar_cube": torch.from_numpy(
+                radar_cube.transpose(3, 0, 1, 2)    # (6, R, A, E)
+            ),
+            "rad_map": torch.from_numpy(
+                rad_map_t.transpose(2, 0, 1)         # (D, R, A)
+            ),
+            "lidar_occ": torch.from_numpy(lidar_occ),   # (R, A, E)
             "meta": {
                 "scene":     triplet[-1]["scene"],
                 "frame_idx": triplet[-1]["frame_idx"],

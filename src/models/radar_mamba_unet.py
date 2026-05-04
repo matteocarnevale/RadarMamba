@@ -226,13 +226,16 @@ def build_model_for_radial() -> RadarMambaUNet:
 def build_model_for_radelft() -> RadarMambaUNet:
     """
     Costruisce il modello con parametri per RaDelft.
-    Grid: [R=500, A=240, E=34], RAD map: D=128 (vel_fft_size).
+
+    Grid dati reali: [R=500, A=240, E=34]
+    (paper usa [512, 256, 34] con zero-padding — equivalente)
+    RAD map: D=128 Doppler bins (vel_fft_size da data_preparation.py)
     """
     return RadarMambaUNet(
         radar_channels=6,
-        doppler_bins=128,
+        doppler_bins=128,    # D=128 = vel_fft_size di RaDelft
         base_channels=64,
-        n_elevation_bins=34,
+        n_elevation_bins=34, # E=34 bin fisici di elevation
         n_encoder_blocks=3,
         n_doppler_blocks=2,
     )

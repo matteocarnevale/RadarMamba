@@ -66,12 +66,14 @@ def build_model(cfg) -> RadarMambaUNet:
 
 
 def axes_for_dataset(cfg):
-    """Restituisce (range_axis, az_axis, el_axis) per la conversione occupancy→pts."""
-    import numpy as np
+    """
+    Restituisce (range_axis, az_axis, el_axis) per la conversione occupancy→punti.
+    Devono corrispondere ESATTAMENTE agli assi usati dal Voxelizer nel Dataset.
+    """
     name = cfg.dataset.name
     if name == "radelft":
         from src.alignment.voxelization import radelft_default_axes
-        return radelft_default_axes()
+        return radelft_default_axes()   # (500,) (240,) (34,) — assi fisici non-uniformi
     elif name == "radial":
         from src.alignment.voxelization import Voxelizer
         v = Voxelizer.for_radial()
