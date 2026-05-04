@@ -1,0 +1,156 @@
+# ============================================================
+# RADIal Dataset Configuration
+# REF: https://github.com/valeoai/RADIal
+# REF: Radar-Mamba paper, Section 4.1
+# ============================================================
+
+dataset:
+  name: radial
+  # Path to raw downloaded data (set after download)
+  raw_path: data/raw/radial
+  # Path where preprocessed .npz files will be saved
+  processed_path: data/processed/radial
+
+  # -----------------------------------------------------------
+  # Train / Test split (paper: 81 train, 10 test)
+  # sequences are numbered 0..90 inside the RADIal HDF5 file
+  # -----------------------------------------------------------
+  split:
+    # Paper: "we train on 81 sequences and test on the remaining 10"
+    # Fill in the exact sequence names after exploring the dataset
+    train_ratio: 0.9         # approx if using ratio instead of explicit list
+    test_sequences: []       # TODO: fill with explicit test sequence names
+    random_seed: 42
+
+  # -----------------------------------------------------------
+  # Radar sensor specs (from RADIal CVPR 2022 paper)
+  # -----------------------------------------------------------
+  radar:
+    n_rx: 16          # receiving antennas
+    n_tx: 12          # transmitting antennas
+    n_virtual: 192    # virtual antennas = n_rx * n_tx
+
+    # Chirp / ADC parameters
+    n_chirps: 256       # chirps per frame (verify with actual data)
+    n_adc_samples: 512  # ADC samples per chirp (range bins before FFT)
+
+    # Physical resolution
+    range_resolution_m: 0.1042   # ~c / (2 * bandwidth)  — verify with specs
+
+  # -----------------------------------------------------------
+  # 4D Radar cube dimensions  (paper Section 4.1)
+  # Grid: [R, A, E] = [480, 736, 11]
+  # -----------------------------------------------------------
+  grid:
+    R: 480     # range bins
+    A: 736     # azimuth bins
+    E: 11      # elevation bins
+
+    range_min_m: 0.0
+    range_max_m: 50.0
+
+    azimuth_min_deg: -75.0
+    azimuth_max_deg:  75.0
+
+    elevation_min_deg: -4.0
+    elevation_max_deg:  6.0
+
+  # -----------------------------------------------------------
+  # RAD map (Range-Azimuth-Doppler) separate from radar cube
+  # Used by the Doppler-aware backbone (Section 3.4)
+  # -----------------------------------------------------------
+  rad_map:
+    R: 480
+    A: 736       # same azimuth resolution as radar cube
+    D: 64        # TODO: verify Doppler bins from dataset
+
+  # -----------------------------------------------------------
+  # Temporal fusion: 3 consecutive frames → [R, A, E, 6]
+  # Section 3.2: "aggregates elevation and velocity features
+  # from the previous two frames"
+  # -----------------------------------------------------------
+  temporal:
+    n_frames: 3          # current frame + 2 previous
+    frame_channels: 2    # (intensity, Doppler) per frame → 3*2 = 6 channels total
+
+# -----------------------------------------------------------
+# Preprocessing pipeline parameters (Section 3.2, Fig. 2)
+# -----------------------------------------------------------
+preprocessing:
+  # Step B3: KD-Tree distance threshold (Eq. 2 in paper)
+  kdtree_distance_threshold_m: 0.5
+
+  # Step B3: Low-threshold CFAR (before KD-tree filter)
+  cfar_low:
+    guard_cells: 4
+    reference_cells: 8
+    # threshold_factor alpha: set low to retain quality points
+    threshold_factor: 1.0   # TODO: tune empirically
+
+  # Step B1: Ground removal (Patchwork++)
+  ground_removal:
+    # Patchwork++ parameters — see its docs for details
+    sensor_height_m: 1.8     # approximate LiDAR height from ground
+    num_iter: 3
+    num_lpr: 20
+    num_min_pts: 10
+    th_seeds: 0.4
+    th_dist: 0.3
+
+# -----------------------------------------------------------
+# Training hyperparameters (Section 4.2)
+# -----------------------------------------------------------
+training:
+  optimizer: adamw
+  lr: 0.001
+  lr_scheduler: cosine
+  epochs: 50
+  batch_size: 16             # "total batch size 16" on 8x V100
+
+  # Focal loss parameters (Section 4.2)
+  focal_loss:
+    alpha: 0.995
+    gamma: 2
+
+  num_workers: 8
+  pin_memory: true
+  mixed_precision: true
+
+# -----------------------------------------------------------
+# Model hyperparameters
+# -----------------------------------------------------------
+model:
+  edc_encoder:
+    out_channels: 64         # paper: "compressed into [C, R, A] with 64 channels"
+
+  rm_block:
+    n_groups: 4              # paper: "divided into four groups along channel dimension"
+    conv_kernels: [3, 5, 7]  # multi-scale depthwise conv kernels
+
+  rhss:
+    # 8 scanning patterns total:
+    # 4 global (VMamba diagonal), 2 zigzag local, 2 inside-out local
+    n_global_scans: 4
+    n_local_zigzag: 2
+    n_local_insideout: 2
+    d_state: 16              # Mamba SSM state size
+    d_conv: 4                # Mamba local conv width
+    expand: 2                # Mamba expansion factor
+
+  cbam:
+    reduction_ratio: 16
+
+  decoder:
+    out_channels: [64, 32, 16]  # progressive upsampling
+
+  total_params_M: 2.4          # reference: paper reports 2.4M
+
+# -----------------------------------------------------------
+# Evaluation metrics (Section 4.2)
+# -----------------------------------------------------------
+evaluation:
+  metrics: [CD, HD, UCD, UHD]
+  # CD: Chamfer Distance (bidirectional average)
+  # HD: Hausdorff Distance (bidirectional max)
+  # UCD: Unidirectional CD (LiDAR→radar only)
+  # UHD: Unidirectional HD

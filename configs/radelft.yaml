@@ -1,0 +1,141 @@
+# ============================================================
+# RaDelft Dataset Configuration
+# REF: https://github.com/RaDelft/RaDelft-Dataset
+# REF: Radar-Mamba paper, Section 4.1
+# ============================================================
+
+dataset:
+  name: radelft
+  raw_path: data/raw/radelft
+  processed_path: data/processed/radelft
+
+  # -----------------------------------------------------------
+  # Train / Test split (paper follows RaDelft original split)
+  # "using scenes 2 and 6 for testing and the rest for training"
+  # 7 scenes total: 1,2,3,4,5,6,7
+  # -----------------------------------------------------------
+  split:
+    train_scenes: [1, 3, 4, 5, 7]
+    test_scenes:  [2, 6]
+
+  # -----------------------------------------------------------
+  # Radar sensor: TI MMWCAS-RF-EVM MIMO board
+  # -----------------------------------------------------------
+  radar:
+    # MMWCAS-RF-EVM: 4 chips × 3TX × 4RX = 48 virtual RX
+    # (verify exact MIMO config in RaDelft documentation)
+    n_chips: 4
+    n_tx_per_chip: 3
+    n_rx_per_chip: 4
+    n_virtual: 86    # verify in dataset docs — azimuth + elevation combined
+
+    # ADC parameters (TODO: verify with dataset documentation)
+    n_chirps: 128
+    n_adc_samples: 512
+
+  # -----------------------------------------------------------
+  # 4D Radar cube dimensions (paper Section 4.1)
+  # Grid: [R, A, E] = [512, 256, 34]
+  # -----------------------------------------------------------
+  grid:
+    R: 512
+    A: 256
+    E: 34
+
+    range_min_m: 0.0
+    range_max_m: 50.0
+
+    azimuth_min_deg: -70.0
+    azimuth_max_deg:  70.0
+
+    elevation_min_deg: -15.0
+    elevation_max_deg:  15.0
+
+  # -----------------------------------------------------------
+  # RAD map
+  # -----------------------------------------------------------
+  rad_map:
+    R: 512
+    A: 256
+    D: 128     # TODO: verify Doppler bins from RaDelft data
+
+  temporal:
+    n_frames: 3
+    frame_channels: 2
+
+# -----------------------------------------------------------
+# LiDAR sensor: RoboSense Ruby Plus (128 layers rotating)
+# -----------------------------------------------------------
+lidar:
+  n_beams: 128
+  vertical_fov_deg: [-25.0, 15.0]   # verify with specs
+
+# -----------------------------------------------------------
+# Preprocessing pipeline
+# -----------------------------------------------------------
+preprocessing:
+  kdtree_distance_threshold_m: 0.5
+
+  cfar_low:
+    guard_cells: 4
+    reference_cells: 8
+    threshold_factor: 1.0
+
+  ground_removal:
+    sensor_height_m: 1.8
+    num_iter: 3
+    num_lpr: 20
+    num_min_pts: 10
+    th_seeds: 0.4
+    th_dist: 0.3
+
+# -----------------------------------------------------------
+# Training hyperparameters
+# Note from RaDelft GitHub changelog (30-04-2025):
+#   corrected alpha=0.99 in radarcube_lidarcube_loss_time
+# We use paper values: alpha=0.995
+# -----------------------------------------------------------
+training:
+  optimizer: adamw
+  lr: 0.001
+  lr_scheduler: cosine
+  epochs: 50
+  batch_size: 16
+
+  focal_loss:
+    alpha: 0.995
+    gamma: 2
+
+  num_workers: 8
+  pin_memory: true
+  mixed_precision: true
+
+# -----------------------------------------------------------
+# Model hyperparameters (same architecture, different grid)
+# GFLOPs varies due to different input resolution
+# paper reports 32.768 GFLOPs on RaDelft vs 61.75 on RADIal
+# -----------------------------------------------------------
+model:
+  edc_encoder:
+    out_channels: 64
+
+  rm_block:
+    n_groups: 4
+    conv_kernels: [3, 5, 7]
+
+  rhss:
+    n_global_scans: 4
+    n_local_zigzag: 2
+    n_local_insideout: 2
+    d_state: 16
+    d_conv: 4
+    expand: 2
+
+  cbam:
+    reduction_ratio: 16
+
+  decoder:
+    out_channels: [64, 32, 16]
+
+evaluation:
+  metrics: [CD, HD, UCD, UHD]

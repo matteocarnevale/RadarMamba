@@ -1,0 +1,50 @@
+# ============================================================
+# Default configuration — overridden by dataset-specific configs
+# Load with: OmegaConf.merge(OmegaConf.load("configs/default.yaml"),
+#                            OmegaConf.load("configs/radial.yaml"))
+# ============================================================
+
+dataset:
+  name: null          # "radial" | "radelft"
+  raw_path: null
+  processed_path: null
+
+training:
+  optimizer: adamw
+  lr: 0.001
+  lr_scheduler: cosine
+  epochs: 50
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
+  mixed_precision: true
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_every_n_epochs: 5
+  focal_loss:
+    alpha: 0.995
+    gamma: 2
+
+model:
+  edc_encoder:
+    out_channels: 64
+  rm_block:
+    n_groups: 4
+    conv_kernels: [3, 5, 7]
+  rhss:
+    d_state: 16
+    d_conv: 4
+    expand: 2
+  cbam:
+    reduction_ratio: 16
+  decoder:
+    out_channels: [64, 32, 16]
+
+logging:
+  project: radar_mamba
+  run_name: null     # auto-generated if null
+  log_dir: runs/
+
+checkpoint:
+  dir: checkpoints/
+  keep_last_n: 3

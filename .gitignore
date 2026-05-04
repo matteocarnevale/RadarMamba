@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual envs
+.venv/
+venv/
+env/
+.env
+
+# Data — non versionare i GB di dati raw
+data/raw/
+data/processed/
+
+# Checkpoint e run
+checkpoints/
+runs/
+wandb/
+*.pth
+*.pt
+*.ckpt
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Numpy/Scipy cache
+*.npy
+*.npz
+*.mat
+*.hdf5
+*.h5
+
+# Logs
+*.log
+*.out
+
+# Temp
+/tmp/
