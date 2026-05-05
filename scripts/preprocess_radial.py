@@ -409,7 +409,8 @@ def main():
     jobs = []
     for sid in sample_ids:
         fft_path   = str(raw_path / "radar_FFT" / f"fft_{sid:06d}.npy")
-        lidar_path = str(raw_path / "laser_PCL" / f"laser_PCL_{sid:06d}.npy")
+        # RADIal ready-to-use: LiDAR files sono pcl_*.npy (NON laser_PCL_*.npy)
+        lidar_path = str(raw_path / "laser_PCL" / f"pcl_{sid:06d}.npy")
         out_path   = str(proc_path / f"{sid:06d}.npz")
 
         if not Path(fft_path).exists():

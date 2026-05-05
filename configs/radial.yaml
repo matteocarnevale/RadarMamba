@@ -15,8 +15,8 @@ dataset:
   raw_path: /media/data/matteo-carnevale/dataset/RADIal
   processed_path: /media/data/matteo-carnevale/dataset/RADIal_processed
 
-  # CalibrationTable.npy per AoA beamforming (da SignalProcessing/ del repo RADIal)
-  calib_table_path: /media/data/matteo-carnevale/dataset/RADIal/CalibrationTable.npy
+  # CalibrationTable.npy per AoA beamforming — nel sottofolder RAED/ del dataset
+  calib_table_path: /media/data/matteo-carnevale/dataset/RADIal/RAED/CalibrationTable.npy
 
   # -----------------------------------------------------------
   # Train / Test split (paper: 81 train, 10 test)

@@ -194,7 +194,7 @@ def build_radial_index(cfg) -> list[dict]:
         split    = "test" if seq_name in _RADIAL_TEST_SEQS else "train"
 
         fft_path   = str(fft_dir   / f"fft_{sid:06d}.npy")
-        lidar_path = str(lidar_dir / f"laser_PCL_{sid:06d}.npy")
+        lidar_path = str(lidar_dir / f"pcl_{sid:06d}.npy")   # RADIal: pcl_*.npy
 
         # Controlla che il file FFT esista
         if fft_dir.exists() and not Path(fft_path).exists():

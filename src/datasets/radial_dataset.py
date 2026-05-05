@@ -150,13 +150,22 @@ class RADIalDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_npz(self, entry: dict) -> dict:
-        """Carica un singolo frame da .npz."""
+        """Carica un singolo frame da .npz (output di preprocess_radial.py)."""
         data = np.load(entry["npz_path"])
         return {
             "tensor_rae2": data["tensor_rae2"],   # (480, 736, 11, 2) float32
             "rad_map":     data["rad_map"],        # (480, 736, 16)    float32
             "lidar_occ":   data["lidar_occ"],      # (480, 736, 11)    float32
         }
+
+    @staticmethod
+    def lidar_filename(sample_id: int) -> str:
+        """
+        Nome file LiDAR nel dataset RADIal ready-to-use.
+        La cartella si chiama laser_PCL/ e i file pcl_{:06d}.npy
+        (NON laser_PCL_{:06d}.npy come nel codice FFTRadNet originale).
+        """
+        return f"pcl_{sample_id:06d}.npy"
 
     # ------------------------------------------------------------------
     # PyTorch Dataset interface

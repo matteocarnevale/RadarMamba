@@ -11,39 +11,52 @@ REF: Paper Section 3.3.1 (Preliminaries):
 
 Mamba (Gu & Dao, 2023):
      GitHub: https://github.com/state-spaces/mamba
-     Installazione: pip install mamba-ssm causal-conv1d
+     Installazione (richiede nvcc nel PATH + CUDA >= 11.6):
+         export PATH=/usr/local/cuda-XX.X/bin:$PATH
+         pip install mamba-ssm causal-conv1d
+     Se nvcc non trovato o CUDA incompatibile (es. cu128 senza wheel):
+         pip install git+https://github.com/state-spaces/mamba.git causal-conv1d
 
-Il modulo Mamba prende sequenze [B, L, D] e restituisce [B, L, D].
-In RHSS lo usiamo per processare ogni sequenza ottenuta dai diversi
-pattern di scansione (VMamba, zigzag, inside-out).
+Se mamba-ssm NON è installabile, il modulo usa automaticamente un
+fallback LSTM bidirezionale — stesso comportamento, performance inferiori.
+Per forzare il fallback (debug senza GPU): imposta MAMBA_FORCE_FALLBACK=1.
+
+    export MAMBA_FORCE_FALLBACK=1
+    python scripts/train.py --config configs/radial.yaml
 """
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn as nn
 
-# Prova a importare mamba-ssm (richiede CUDA)
-try:
-    from mamba_ssm import Mamba
-    MAMBA_AVAILABLE = True
-except ImportError:
-    MAMBA_AVAILABLE = False
+# Controlla se forzare il fallback via variabile d'ambiente
+_FORCE_FALLBACK = os.environ.get("MAMBA_FORCE_FALLBACK", "0") == "1"
+
+# Prova a importare mamba-ssm (richiede nvcc + CUDA)
+MAMBA_AVAILABLE = False
+if not _FORCE_FALLBACK:
+    try:
+        from mamba_ssm import Mamba
+        MAMBA_AVAILABLE = True
+    except (ImportError, Exception):
+        pass
 
 
 class MambaSSM(nn.Module):
     """
-    Wrapper attorno al modulo Mamba di mamba-ssm.
+    Wrapper attorno al modulo Mamba di mamba-ssm con fallback automatico.
 
-    Se mamba-ssm non è disponibile (CPU o CUDA non compatibile),
-    usa un MambaFallback basato su LSTM — più lento ma funzionale
-    per sviluppo e debugging.
+    Se mamba-ssm non è disponibile usa MambaFallback (LSTM bidirezionale).
+    Stessa interfaccia: [B, L, D] → [B, L, D].
 
     Args:
-        d_model: dimensione delle feature (D nel paper).
-        d_state: dimensione dello stato SSM (N nel paper, default 16).
-        d_conv:  larghezza della convoluzione locale (default 4).
-        expand:  fattore di espansione del blocco (default 2).
+        d_model: dimensione delle feature.
+        d_state: dimensione dello stato SSM (default 16).
+        d_conv:  larghezza convoluzione locale (default 4).
+        expand:  fattore di espansione (default 2).
     """
 
     def __init__(
@@ -67,8 +80,12 @@ class MambaSSM(nn.Module):
         else:
             import warnings
             warnings.warn(
-                "mamba-ssm non disponibile. Uso LSTM come fallback (più lento).\n"
-                "Installa mamba-ssm con: pip install mamba-ssm causal-conv1d",
+                "mamba-ssm non disponibile — uso LSTM bidirezionale.\n"
+                "Per installare mamba-ssm:\n"
+                "  1. export PATH=/usr/local/cuda-XX.X/bin:$PATH  (aggiungi nvcc)\n"
+                "  2. pip install mamba-ssm causal-conv1d\n"
+                "  oppure: pip install git+https://github.com/state-spaces/mamba.git\n"
+                "Per sopprimere questo warning: export MAMBA_FORCE_FALLBACK=1",
                 RuntimeWarning,
                 stacklevel=2,
             )
