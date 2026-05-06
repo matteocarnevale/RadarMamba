@@ -1,22 +1,21 @@
 """
-Passo B2 — Coordinate Transformation (Cartesian → Polar)
-==========================================================
-Trasforma il point cloud LiDAR da coordinate cartesiane (x, y, z)
-a coordinate polari (range, azimuth, elevation) compatibili con la
-griglia del tensore radar.
+Step B2 — Coordinate Transformation (Cartesian → Polar)
+======================================================
+Transforms the LiDAR point cloud from Cartesian coordinates (x, y, z) into polar
+coordinates (range, azimuth, elevation) compatible with the radar tensor grid.
 
 REF: Paper Section 3.2, Step (2)
      "The polar coordinate system (range, azimuth, elevation) better
       captures radar feature distributions across distances. We transform
       LiDAR point clouds from Cartesian to polar coordinates."
 
-Convenzione adottata (deve essere coerente con la DoA estimation):
-    range     r   = sqrt(x² + y² + z²)         [metri]
-    azimuth   az  = atan2(y, x)                 [radianti, poi convertito in gradi]
-    elevation el  = atan2(z, sqrt(x² + y²))     [radianti, poi convertito in gradi]
+Adopted convention (must match the DoA estimation convention):
+    range     r   = sqrt(x² + y² + z²)         [meters]
+    azimuth   az  = atan2(y, x)                [radians, optionally converted to degrees]
+    elevation el  = atan2(z, sqrt(x² + y²))    [radians, optionally converted to degrees]
 
-Nota: la convezione di azimuth/elevation dipende dall'orientamento del radar.
-Verifica con le specifiche hardware e le note di calibrazione dei dataset.
+Note: azimuth/elevation conventions depend on the radar coordinate frame.
+Verify with your hardware specs and the dataset calibration notes.
 """
 
 from __future__ import annotations
@@ -25,14 +24,14 @@ import numpy as np
 
 
 # ------------------------------------------------------------------
-# Funzioni di conversione (matematica completa — non richiedono TODO)
+# Conversion utilities (fully specified math, no TODOs required)
 # ------------------------------------------------------------------
 
 def cartesian_to_spherical_rad(
     x: np.ndarray, y: np.ndarray, z: np.ndarray
 ) -> np.ndarray:
     """
-    Converte coordinate cartesiane in sferiche in RADIANTI.
+    Convert Cartesian coordinates to spherical coordinates in RADIANS.
     Replicates RaDelft::data_preparation.cartesian_to_spherical.
 
     REF: data_preparation.py::cartesian_to_spherical
@@ -58,14 +57,14 @@ def cartesian_to_polar(
     degrees: bool = True,
 ) -> np.ndarray:
     """
-    Converte coordinate cartesiane in coordinate polari 3D.
+    Convert Cartesian coordinates to 3D polar coordinates.
 
     Args:
-        points_xyz: np.ndarray, shape (N, 3) — colonne [x, y, z].
-        degrees: se True, azimuth ed elevation sono in gradi; altrimenti radianti.
+        points_xyz: (N, 3) — columns [x, y, z].
+        degrees: if True, azimuth/elevation are returned in degrees; otherwise in radians.
 
     Returns:
-        points_polar: np.ndarray, shape (N, 3) — colonne [range, azimuth, elevation].
+        points_polar: (N, 3) — columns [range, azimuth, elevation].
     """
     x = points_xyz[:, 0].astype(np.float64)
     y = points_xyz[:, 1].astype(np.float64)
@@ -90,14 +89,14 @@ def polar_to_cartesian(
     degrees: bool = True,
 ) -> np.ndarray:
     """
-    Converte coordinate polari in coordinate cartesiane.
+    Convert polar coordinates to Cartesian coordinates.
 
     Args:
-        points_polar: np.ndarray, shape (N, 3) — colonne [range, azimuth, elevation].
-        degrees: se True, azimuth ed elevation sono in gradi.
+        points_polar: (N, 3) — columns [range, azimuth, elevation].
+        degrees: if True, azimuth/elevation are provided in degrees.
 
     Returns:
-        points_xyz: np.ndarray, shape (N, 3) — colonne [x, y, z].
+        points_xyz: (N, 3) — columns [x, y, z].
     """
     r  = points_polar[:, 0].astype(np.float64)
     az = points_polar[:, 1].astype(np.float64)
@@ -115,7 +114,7 @@ def polar_to_cartesian(
 
 
 # ------------------------------------------------------------------
-# Binning: da polari continui a indici di griglia discreta
+# Binning: continuous polar coords → discrete grid indices
 # ------------------------------------------------------------------
 
 def polar_to_grid_indices(
@@ -124,22 +123,22 @@ def polar_to_grid_indices(
     clip: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Mappa punti in coordinate polari agli indici discreti della griglia [R, A, E].
+    Map polar points to discrete grid indices [R, A, E].
 
     Args:
-        points_polar: np.ndarray, shape (N, 3) — [range_m, azimuth_deg, elevation_deg].
-        grid_cfg: dizionario con i parametri della griglia, es.:
+        points_polar: (N, 3) — [range_m, azimuth_deg, elevation_deg].
+        grid_cfg: grid parameter dict, e.g.:
                   {
                       "R": 480, "A": 736, "E": 11,
                       "range_min_m": 0.0,   "range_max_m": 50.0,
                       "azimuth_min_deg": -75.0, "azimuth_max_deg": 75.0,
                       "elevation_min_deg": -4.0, "elevation_max_deg": 6.0,
                   }
-        clip: se True, taglia punti fuori dai limiti della griglia.
+        clip: if True, clip indices to grid bounds.
 
     Returns:
-        indices: np.ndarray, shape (M, 3) — [idx_R, idx_A, idx_E] interi.
-        valid_mask: np.ndarray, shape (N,) bool — True per i punti dentro la griglia.
+        indices: (M, 3) — integer indices [idx_R, idx_A, idx_E].
+        valid_mask: (N,) bool — True for points inside the physical grid bounds.
     """
     R = grid_cfg["R"]
     A = grid_cfg["A"]
@@ -153,12 +152,12 @@ def polar_to_grid_indices(
     az = points_polar[:, 1]
     el = points_polar[:, 2]
 
-    # Normalizza [0, 1] → scala sulla dimensione della griglia
+    # Normalize to [0, 1] then scale to grid resolution
     idx_r  = ((r  - r_min)  / (r_max  - r_min))  * R
     idx_az = ((az - az_min) / (az_max - az_min)) * A
     idx_el = ((el - el_min) / (el_max - el_min)) * E
 
-    # Maschera punti validi (dentro i limiti fisici del sensore)
+    # Valid mask (inside the physical bounds)
     valid = (
         (r  >= r_min)  & (r  <  r_max)  &
         (az >= az_min) & (az <  az_max) &
@@ -178,15 +177,15 @@ def polar_to_grid_indices(
 
 
 # ------------------------------------------------------------------
-# Pipeline completa LiDAR Cartesiano → indici griglia radar
+# Full pipeline: Cartesian LiDAR → radar grid indices
 # ------------------------------------------------------------------
 
 class LiDARPolarTransformer:
     """
-    Trasforma un point cloud LiDAR (già in frame radar dopo calibrazione)
-    da coordinate cartesiane a indici di griglia polare compatibili col radar.
+    Transform a LiDAR point cloud (already in radar frame after calibration)
+    from Cartesian coordinates to polar grid indices compatible with the radar grid.
 
-    Uso tipico:
+    Typical usage:
         transformer = LiDARPolarTransformer(grid_cfg)
         pts_polar   = transformer.to_polar(pts_xyz_in_radar_frame)
         indices, valid = transformer.to_grid_indices(pts_polar)
@@ -196,25 +195,25 @@ class LiDARPolarTransformer:
         self.grid_cfg = grid_cfg
 
     def to_polar(self, points_xyz: np.ndarray, degrees: bool = True) -> np.ndarray:
-        """Converte (N,3) cartesiane in (N,3) polari [r, az, el]."""
+        """Convert (N, 3) Cartesian to (N, 3) polar [r, az, el]."""
         return cartesian_to_polar(points_xyz, degrees=degrees)
 
     def to_grid_indices(
         self, points_polar: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Mappa (N,3) polari in (M,3) indici griglia e maschera validi."""
+        """Map (N, 3) polar to (M, 3) grid indices and a valid mask."""
         return polar_to_grid_indices(points_polar, self.grid_cfg)
 
     def transform_full(
         self, points_xyz: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Pipeline completa: cartesiano → polari → indici griglia.
+        Full pipeline: Cartesian → polar → grid indices.
 
         Returns:
-            pts_polar: (N, 3) — [range, az, el] in gradi
-            indices:   (M, 3) — indici [idx_R, idx_A, idx_E]
-            valid:     (N,)   — bool mask punti validi
+            pts_polar: (N, 3) — [range, az, el] in degrees
+            indices:   (M, 3) — indices [idx_R, idx_A, idx_E]
+            valid:     (N,)   — bool mask of valid points
         """
         pts_polar = self.to_polar(points_xyz)
         indices, valid = self.to_grid_indices(pts_polar)

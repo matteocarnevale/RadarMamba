@@ -5,7 +5,7 @@ REF: Paper Section 4.2:
      AdamW, lr=0.001, cosine decay, 50 epochs, batch_size=16, 8×V100
      Focal loss α=0.995, γ=2
 
-Uso:
+Usage:
     python scripts/train.py --config configs/radelft.yaml
     python scripts/train.py --config configs/radial.yaml --fast_dev_run
     python scripts/train.py --config configs/radelft.yaml --resume checkpoints/epoch_010.pth
@@ -32,7 +32,7 @@ from src.utils.metrics import PointCloudMetrics
 
 
 # ------------------------------------------------------------------
-# Factory: dataset + modello dal config
+# Factory: build dataset + model from config
 # ------------------------------------------------------------------
 
 def build_dataset(cfg, split: str):
@@ -46,14 +46,14 @@ def build_dataset(cfg, split: str):
         )
     elif name == "radial":
         from src.datasets.radial_dataset import RADIalDataset
-        # RADIal usa i .npz pre-processati da preprocess_radial.py
-        # Esegui prima: python scripts/preprocess_radial.py --config configs/radial.yaml
+        # RADIal uses `.npz` preprocessed by preprocess_radial.py.
+        # Run first: python scripts/preprocess_radial.py --config configs/radial.yaml
         return RADIalDataset(
             processed_path=cfg.dataset.processed_path,
             mode=split,
         )
     else:
-        raise ValueError(f"Dataset sconosciuto: {name}")
+        raise ValueError(f"Unknown dataset: {name}")
 
 
 def build_model(cfg) -> RadarMambaUNet:
@@ -63,24 +63,24 @@ def build_model(cfg) -> RadarMambaUNet:
     elif name == "radial":
         return build_model_for_radial()
     else:
-        raise ValueError(f"Dataset sconosciuto: {name}")
+        raise ValueError(f"Unknown dataset: {name}")
 
 
 def axes_for_dataset(cfg):
     """
-    Restituisce (range_axis, az_axis, el_axis) per la conversione occupancy→punti.
-    Devono corrispondere ESATTAMENTE agli assi usati dal Voxelizer nel Dataset.
+    Return (range_axis, az_axis, el_axis) used to convert occupancy → point cloud.
+    These must match EXACTLY the axes used by the Dataset's voxelization.
     """
     name = cfg.dataset.name
     if name == "radelft":
         from src.alignment.voxelization import radelft_default_axes
-        return radelft_default_axes()   # (500,) (240,) (34,) — assi fisici non-uniformi
+        return radelft_default_axes()   # (500,) (240,) (34,) — non-uniform physical axes
     elif name == "radial":
         from src.alignment.voxelization import Voxelizer
         v = Voxelizer.for_radial()
         return v.range_axis, v.azimuth_axis, v.elevation_axis   # (480,) (736,) (11,)
     else:
-        raise ValueError(f"Dataset sconosciuto: {name}")
+        raise ValueError(f"Unknown dataset: {name}")
 
 
 # ------------------------------------------------------------------
@@ -160,7 +160,7 @@ def evaluate(
         total_loss += loss.item()
         n_batches  += 1
 
-        # Converti predizioni e GT in point cloud per le metriche
+        # Convert predictions and GT to point clouds for the metrics
         pred_pcs = model.predict_pointcloud(
             radar_cube, rad_map,
             range_axis, azimuth_axis, elevation_axis,
@@ -189,8 +189,8 @@ def evaluate(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config",       required=True,         help="Path al config YAML")
-    parser.add_argument("--resume",       default=None,          help="Checkpoint da cui riprendere")
+    parser.add_argument("--config",       required=True,         help="Path to YAML config")
+    parser.add_argument("--resume",       default=None,          help="Checkpoint to resume from")
     parser.add_argument("--fast_dev_run", action="store_true",   help="1 batch per epoch (debug)")
     parser.add_argument("--device",       default="auto")
     args = parser.parse_args()
@@ -225,18 +225,18 @@ def main():
         num_workers=cfg.training.num_workers,
     )
 
-    # Modello
+    # Model
     model = build_model(cfg).to(device)
     n_params = model.count_parameters()
     print(f"Parametri: {n_params/1e6:.2f}M  (paper: 2.4M)")
 
-    # Ottimizzatore + scheduler (AdamW + cosine, paper Section 4.2)
+    # Optimizer + scheduler (AdamW + cosine, paper Section 4.2)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cfg.training.epochs, eta_min=1e-6
     )
 
-    # Focal Loss α=0.995, γ=2 (paper Section 4.2)
+    # Focal loss α=0.995, γ=2 (paper Section 4.2)
     criterion = FocalLoss(
         alpha=cfg.training.focal_loss.alpha,
         gamma=cfg.training.focal_loss.gamma,
@@ -246,7 +246,7 @@ def main():
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
     scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-    # Assi fisici per le metriche
+    # Physical axes for metrics (occupancy → point cloud)
     range_axis, az_axis, el_axis = axes_for_dataset(cfg)
 
     # Resume
@@ -259,7 +259,7 @@ def main():
         scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt["epoch"] + 1
         best_cd     = ckpt.get("best_cd", float("inf"))
-        print(f"Ripreso da epoch {start_epoch}, best_cd={best_cd:.4f}")
+        print(f"Resumed from epoch {start_epoch}, best_cd={best_cd:.4f}")
 
     # Training loop
     for epoch in range(start_epoch, cfg.training.epochs):
@@ -281,7 +281,7 @@ def main():
             print("fast_dev_run: stop dopo 1 epoch.")
             break
 
-        # Valutazione periodica
+        # Periodic evaluation
         if (epoch + 1) % cfg.checkpoint.keep_last_n == 0 or epoch == cfg.training.epochs - 1:
             metrics = evaluate(
                 model, test_loader, criterion, device,
@@ -292,7 +292,7 @@ def main():
                   f"UCD={metrics.get('UCD', float('nan')):.4f}  "
                   f"N_pts={metrics.get('n_pred_points', 0):.0f}")
 
-            # Salva il miglior modello per CD
+            # Save the best model by CD
             cd = metrics.get("CD", float("inf"))
             if cd < best_cd:
                 best_cd = cd
@@ -303,7 +303,7 @@ def main():
                 )
                 print(f"  → Salvato best.pth (CD={best_cd:.4f})")
 
-        # Checkpoint periodico
+        # Periodic checkpoint
         torch.save(
             {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
              "scheduler": scheduler.state_dict(), "epoch": epoch, "best_cd": best_cd},

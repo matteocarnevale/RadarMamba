@@ -1,15 +1,15 @@
 """
 Build Dataset Index
 ====================
-Scansiona le cartelle raw e genera un indice JSON con la lista
-di tutti i campioni (scene, frame, path, split).
+Scans the raw folders and generates a JSON index listing all samples
+(scene, frame, paths, split).
 
-Questo script è OPZIONALE: RaDelftDataset e RADIalDataset costruiscono
-il loro indice interno automaticamente. Usalo per:
-  - Ispezionare quanti campioni ci sono prima del training
-  - Salvare un indice statico su disco per debug
+This script is OPTIONAL: `RaDelftDataset` and `RADIalDataset` build their internal
+index automatically. Use it to:
+  - Inspect how many samples you have before training
+  - Save a static index to disk for debugging / reproducibility
 
-Uso:
+Usage:
     python scripts/build_dataset_index.py --config configs/radelft.yaml
     python scripts/build_dataset_index.py --config configs/radial.yaml
 """
@@ -37,14 +37,14 @@ from omegaconf import OmegaConf
 
 def build_radelft_index(cfg) -> list[dict]:
     """
-    Scansiona le scene RaDelft e costruisce l'indice JSON.
+    Scan RaDelft scenes and build a JSON index.
 
-    Struttura attesa:
+    Expected structure:
         <raw_path>/Scene{N}/RadarCubes/Pow_Frame_{idx}.mat
         <raw_path>/Scene{N}/RadarCubes/timestamps.mat
         <raw_path>/Scene{N}/rosDS/rslidar_points_clean/{ts}.npy
 
-    Split: Scene 2 e 6 = test, Scene 1,3,4,5,7 = train (paper Sec 4.1)
+    Split: Scene 2 and 6 = test, Scene 1,3,4,5,7 = train (paper Sec 4.1)
     """
     raw_path   = Path(cfg.dataset.raw_path)
     train_sc   = list(cfg.dataset.split.train_scenes)
@@ -78,7 +78,7 @@ def build_radelft_index(cfg) -> list[dict]:
             print(f"  ⚠️  Scene{scene_num} non trovata in {cubes_dir} — saltata")
             continue
 
-        # Trova tutti i frame disponibili
+        # List available frames
         pow_files = [f for f in os.listdir(str(cubes_dir)) if "Pow_Frame" in f]
         frame_nums = sorted([int(f.split("_")[-1].split(".")[0]) for f in pow_files])
 
@@ -86,7 +86,7 @@ def build_radelft_index(cfg) -> list[dict]:
             print(f"  ⚠️  Nessun Pow_Frame in Scene{scene_num} — saltata")
             continue
 
-        # Carica il mapping timestamp → frame_num
+        # Load timestamp → frame mapping
         ts_mat_path = cubes_dir / "timestamps.mat"
         if ts_mat_path.exists():
             frame_num_to_ts = scipy.io.loadmat(str(ts_mat_path))["unixDateTime"]
@@ -94,21 +94,21 @@ def build_radelft_index(cfg) -> list[dict]:
             frame_num_to_ts = None
             print(f"  ⚠️  timestamps.mat non trovato per Scene{scene_num}")
 
-        # Mapping timestamp → path LiDAR
+        # Mapping timestamp → LiDAR path
         lidar_ts2path: dict[int, str] = {}
         if lidar_dir.exists():
             lidar_ts2path = _get_timestamps_and_paths(str(lidar_dir))
 
         split = "test" if scene_num in test_sc else "train"
 
-        # Costruisci una entry per ogni frame (a partire dal frame 3 per avere t-2)
+        # Build one entry per frame (temporal fusion needs t-2)
         for idx in frame_nums:
             if frame_num_to_ts is not None and idx <= len(frame_num_to_ts):
                 ts_ns = int(frame_num_to_ts[idx - 1][0]) * 10**9
             else:
                 ts_ns = idx   # fallback
 
-            # Path LiDAR più vicino
+            # Closest LiDAR timestamp/path
             lidar_path = ""
             if lidar_ts2path:
                 lt = _closest_ts(ts_ns, lidar_ts2path)
@@ -148,18 +148,18 @@ _RADIAL_TEST_SEQS = {
 
 def build_radial_index(cfg) -> list[dict]:
     """
-    Costruisce l'indice RADIal dal file labels.csv.
+    Build the RADIal index from labels.csv.
 
-    Struttura attesa (dataset ready-to-use):
+    Expected structure (ready-to-use dataset):
         <raw_path>/labels.csv
         <raw_path>/radar_FFT/fft_{:06d}.npy
-        <raw_path>/laser_PCL/laser_PCL_{:06d}.npy   (opzionale)
+        <raw_path>/laser_PCL/pcl_{:06d}.npy   (optional)
 
-    labels.csv colonne:
+    labels.csv columns:
         0 = numSample (sample_id), 14 = dataset (sequence name), -1 = Difficult
 
-    Split: le 8 sequenze in _RADIAL_TEST_SEQS → test, resto → train
-    (81 train / 10 test come nel paper Radar-Mamba Section 4.1)
+    Split: the 8 sequences in _RADIAL_TEST_SEQS → test, the rest → train
+    (81 train / 10 test as in Radar-Mamba paper Section 4.1)
     """
     raw_path    = Path(cfg.dataset.raw_path)
     labels_path = raw_path / "labels.csv"
@@ -174,7 +174,7 @@ def build_radial_index(cfg) -> list[dict]:
 
     df = pd.read_csv(str(labels_path))
 
-    # Colonna 0 = sample_id, colonna 14 = nome sequenza (se esiste)
+    # Column 0 = sample_id, column 14 = sequence name (if present)
     sample_col = df.columns[0]
     seq_col    = df.columns[14] if len(df.columns) > 14 else None
 
@@ -196,9 +196,9 @@ def build_radial_index(cfg) -> list[dict]:
         fft_path   = str(fft_dir   / f"fft_{sid:06d}.npy")
         lidar_path = str(lidar_dir / f"pcl_{sid:06d}.npy")   # RADIal: pcl_*.npy
 
-        # Controlla che il file FFT esista
+        # Ensure FFT exists
         if fft_dir.exists() and not Path(fft_path).exists():
-            continue   # frame senza FFT → salta
+            continue   # frame without FFT → skip
 
         samples.append({
             "sample_id":   sid,
@@ -206,7 +206,7 @@ def build_radial_index(cfg) -> list[dict]:
             "split":       split,
             "fft_path":    fft_path,
             "lidar_path":  lidar_path if Path(lidar_path).exists() else "",
-            # Frame precedenti per la fusione temporale (sample_id - 1, - 2)
+            # Previous frames for temporal fusion (sample_id - 1, - 2)
             "fft_path_tm1": str(fft_dir / f"fft_{max(unique_ids[0], sid-1):06d}.npy"),
             "fft_path_tm2": str(fft_dir / f"fft_{max(unique_ids[0], sid-2):06d}.npy"),
         })
@@ -220,7 +220,7 @@ def build_radial_index(cfg) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description="Build dataset index JSON")
-    parser.add_argument("--config",     required=True,  help="Path al config YAML")
+    parser.add_argument("--config",     required=True,  help="Path to YAML config")
     parser.add_argument("--output_dir", default=None,
                         help="Directory output (default: processed_path dal config)")
     args = parser.parse_args()
@@ -236,9 +236,9 @@ def main():
     elif dataset_name == "radelft":
         samples = build_radelft_index(cfg)
     else:
-        raise ValueError(f"Dataset sconosciuto: {dataset_name}")
+        raise ValueError(f"Unknown dataset: {dataset_name}")
 
-    # Separa split
+    # Split
     train_samples = [s for s in samples if s["split"] == "train"]
     test_samples  = [s for s in samples if s["split"] == "test"]
 
@@ -246,7 +246,7 @@ def main():
     print(f"  Train         : {len(train_samples)}")
     print(f"  Test          : {len(test_samples)}")
 
-    # Salva su disco
+    # Save to disk
     out_dir = Path(args.output_dir) if args.output_dir else Path(cfg.dataset.processed_path)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,14 +258,14 @@ def main():
     with open(train_path, "w") as f: json.dump(train_samples, f, indent=2)
     with open(test_path,  "w") as f: json.dump(test_samples,  f, indent=2)
 
-    print(f"\nSalvati in {out_dir}:")
+    print(f"\nSaved to {out_dir}:")
     print(f"  {all_path.name}")
     print(f"  {train_path.name}")
     print(f"  {test_path.name}")
 
-    # Stampa le prime 2 entry per verifica
+    # Print the first entry for a quick sanity check
     if samples:
-        print(f"\nPrima entry di esempio:")
+        print(f"\nFirst entry example:")
         import pprint
         pprint.pprint(samples[0], indent=2)
 

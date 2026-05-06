@@ -1,18 +1,19 @@
 """
-Passo B5 — Voxelization → 3D Occupancy Grid (Ground Truth)
-============================================================
+Step B5 — Voxelization → 3D Occupancy Grid (Ground Truth)
+=========================================================
 REF: Paper Section 3.2, Step (5)
 REF: RaDelft::non_uniform_voxelize_numpy + lidarpc_to_lidarcube
 
-Il RaDelft usa griglie NON-UNIFORMI per gli assi (range, azimuth, elevation):
-    range_axis    = np.arange(0.1004, 51.5, 0.1004)[10:-3]       # ~487 valori in metri
-    azimuth_axis  = arcsin(linspace(-π, π, 256)[8:248] / (2π*0.4972))  # 240 valori in rad
-    elevation_axis = arcsin(linspace(-π, π, 128)[47:81] / (2π*0.4972)) # 34 valori in rad
+RaDelft uses NON-UNIFORM axes (range, azimuth, elevation):
+    range_axis     = np.arange(0.1004, 51.5, 0.1004)[10:-3]                        # ~487 values [m]
+    azimuth_axis   = arcsin(linspace(-π, π, 256)[8:248]   / (2π*0.4972))            # 240 values [rad]
+    elevation_axis = arcsin(linspace(-π, π, 128)[47:81]   / (2π*0.4972))            # 34 values [rad]
 
-Usa np.searchsorted (come in data_preparation.py) per trovare il bin più vicino.
-Dopo la voxelization applica flip (az + el) e transpose [E, R, A] → [R, A, E].
+We use `np.searchsorted` (as in RaDelft's `data_preparation.py`) to pick the closest bin.
+After voxelization, RaDelft applies flips on azimuth and elevation.
 
-Per RADIal la griglia è più uniforme — usiamo la stessa funzione con assi uniformi.
+For RADIal the grid is closer to uniform — we reuse the same voxelization logic with
+uniform axes.
 """
 
 from __future__ import annotations
@@ -21,25 +22,25 @@ import numpy as np
 
 
 # ------------------------------------------------------------------
-# Griglia non-uniforme per RaDelft (valori fisici, parametri reali)
+# Non-uniform grid for RaDelft (physical axes, real parameters)
 # ------------------------------------------------------------------
 
 def radelft_default_axes() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Restituisce gli assi NON-UNIFORMI del RaDelft come in get_default_params().
-    Unità: range in metri, azimuth/elevation in RADIANTI.
+    Return the RaDelft NON-UNIFORM axes as in `get_default_params()`.
+    Units: range in meters, azimuth/elevation in radians.
 
     REF: RaDelft::get_default_params()
 
-    NOTA SULLE DIMENSIONI:
-        Il radarCube grezzo dal dataset ha forma [R=500, D=128, A=240].
-        In get_default_params(), range_axis usa [10:-3] → 487 bin, ma questo
-        è l'asse per la voxelizzazione del LiDAR (copre l'intervallo fisicamente
-        valido). Il cubo radar grezzo ha 500 bin (incluse le celle marginali).
-        Per far coincidere cubo radar e GT voxelizzato, usiamo 500 bin nel range_axis
-        (i primi 500 valori dell'asse continuo, cioè da 0.1004m a ~50.2m).
+    NOTE ON SHAPES:
+        The raw `radarCube` from the dataset has shape [R=500, D=128, A=240].
+        In `get_default_params()`, `range_axis` uses [10:-3] → 487 bins, which is
+        intended for LiDAR voxelization over a physically valid interval. The raw
+        radar cube includes 500 range bins (including marginal cells). To keep the
+        radar cube and voxelized GT aligned, we use 500 bins for `range_axis`
+        (the first 500 values of the continuous axis, from 0.1004m to ~50.2m).
     """
-    # Range axis — 500 bin per matchare esattamente radarCube.shape[0]
+    # Range axis — 500 bins to match `radarCube.shape[0]` exactly
     range_cell_size = 0.1004
     max_range       = 51.4242
     range_axis_full = np.arange(range_cell_size, max_range + range_cell_size, range_cell_size)
@@ -59,7 +60,7 @@ def radelft_default_axes() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 # ------------------------------------------------------------------
-# Voxelizzazione non-uniforme (esatta dalla repo RaDelft)
+# Non-uniform voxelization (close to RaDelft reference implementation)
 # ------------------------------------------------------------------
 
 def non_uniform_voxelize(
@@ -69,19 +70,19 @@ def non_uniform_voxelize(
     elevation_axis: np.ndarray,
 ) -> np.ndarray:
     """
-    Voxelizza un punto cloud sferico [range, azimuth, elevation] su una griglia
-    non-uniforme usando np.searchsorted.
+    Voxelize a spherical point cloud [range, azimuth, elevation] on a non-uniform
+    grid using `np.searchsorted`.
 
-    REF: data_preparation.non_uniform_voxelize_numpy (copia quasi esatta)
+    REF: `data_preparation.non_uniform_voxelize_numpy` (almost exact copy)
 
     Args:
         point_cloud_sph: (N, 3) — [range_m, az_rad, el_rad].
-        range_axis:      (R,) — range bins in metri.
-        azimuth_axis:    (A,) — azimuth bins in radianti.
-        elevation_axis:  (E,) — elevation bins in radianti.
+        range_axis:      (R,) — range bins in meters.
+        azimuth_axis:    (A,) — azimuth bins in radians.
+        elevation_axis:  (E,) — elevation bins in radians.
 
     Returns:
-        voxel_grid: (R, A, E) float32 — 1 dove c'è almeno un punto, 0 altrimenti.
+        voxel_grid: (R, A, E) float32 — 1 where at least one point falls in the voxel, else 0.
     """
     num_r = len(range_axis)
     num_a = len(azimuth_axis)
@@ -92,12 +93,12 @@ def non_uniform_voxelize(
     if len(point_cloud_sph) == 0:
         return voxel_grid
 
-    # Trova bin più vicino per ogni asse con searchsorted
+    # Find the closest bin index for each axis via searchsorted
     r_idx = np.searchsorted(range_axis,     point_cloud_sph[:, 0], side="left")
     a_idx = np.searchsorted(azimuth_axis,   point_cloud_sph[:, 1], side="left")
     e_idx = np.searchsorted(elevation_axis, point_cloud_sph[:, 2], side="left")
 
-    # Filtra punti fuori dalla griglia
+    # Filter points outside the grid
     valid = (
         (r_idx >= 0) & (r_idx < num_r) &
         (a_idx >= 0) & (a_idx < num_a) &
@@ -106,7 +107,7 @@ def non_uniform_voxelize(
     r_idx, a_idx, e_idx = r_idx[valid], a_idx[valid], e_idx[valid]
     pc_valid = point_cloud_sph[valid]
 
-    # Corregge verso il bin più vicino (non sempre il bin sinistro)
+    # Correct to the nearest bin (not always the left bin).
     # REF: data_preparation.py lines 91-103
     def _correct_idx(idx, axis, values):
         condition = (idx > 0) & (
@@ -122,7 +123,7 @@ def non_uniform_voxelize(
     a_idx = _correct_idx(a_idx, azimuth_axis,   pc_valid[:, 1])
     e_idx = _correct_idx(e_idx, elevation_axis, pc_valid[:, 2])
 
-    # Clip finale per sicurezza
+    # Final safety clip
     r_idx = np.clip(r_idx, 0, num_r - 1)
     a_idx = np.clip(a_idx, 0, num_a - 1)
     e_idx = np.clip(e_idx, 0, num_e - 1)
@@ -138,31 +139,31 @@ def lidarpc_to_lidarcube(
     elevation_axis: np.ndarray,
 ) -> np.ndarray:
     """
-    Converte un punto cloud LiDAR cartesiano nella griglia occupancy [R, A, E].
+    Convert a Cartesian LiDAR point cloud into an occupancy grid [R, A, E].
 
-    Replicates RaDelft::lidarpc_to_lidarcube (non-BEV path, output [E, R, A] → [R, A, E]).
+    Replicates RaDelft::lidarpc_to_lidarcube (non-BEV path).
 
     REF: data_preparation.lidarpc_to_lidarcube
 
     Args:
-        lidar_xyz:     (N, 3) — [x, y, z] cartesiani nel frame del sensore.
-        range/azimuth/elevation_axis: assi non-uniformi.
+        lidar_xyz: (N, 3) — [x, y, z] Cartesian coordinates in the sensor frame.
+        range/azimuth/elevation_axis: non-uniform axes.
 
     Returns:
-        cube: (R, A, E) float32 — griglia di occupancy.
+        cube: (R, A, E) float32 — occupancy grid.
     """
     from src.alignment.coordinate_transform import cartesian_to_spherical_rad
 
     if len(lidar_xyz) == 0:
         return np.zeros((len(range_axis), len(azimuth_axis), len(elevation_axis)), dtype=np.float32)
 
-    # Cartesiano → sferico (range_m, az_rad, el_rad)
+    # Cartesian → spherical (range_m, az_rad, el_rad)
     sph = cartesian_to_spherical_rad(lidar_xyz[:, 0], lidar_xyz[:, 1], lidar_xyz[:, 2])
 
-    # Voxelizza su griglia non-uniforme (output: [R, A, E])
+    # Voxelize on the non-uniform grid (output: [R, A, E])
     cube = non_uniform_voxelize(sph, range_axis, azimuth_axis, elevation_axis)
 
-    # Flip degli assi azimuth e elevation (come in data_preparation.py)
+    # Flip azimuth and elevation axes (as in data_preparation.py)
     # REF: data_preparation.py lines 329-330
     cube = np.flip(cube, axis=1)  # flip azimuth
     cube = np.flip(cube, axis=2)  # flip elevation
@@ -171,13 +172,13 @@ def lidarpc_to_lidarcube(
 
 
 # ------------------------------------------------------------------
-# Classe wrapper orientata agli oggetti
+# OO wrapper
 # ------------------------------------------------------------------
 
 class Voxelizer:
     """
-    Voxelizzatore configurabile per RADIal e RaDelft.
-    Usa assi non-uniformi come in RaDelft::lidarpc_to_lidarcube.
+    Configurable voxelizer for RADIal and RaDelft.
+    Uses non-uniform axes as in RaDelft::lidarpc_to_lidarcube.
     """
 
     def __init__(
@@ -195,16 +196,16 @@ class Voxelizer:
 
     @classmethod
     def for_radelft(cls) -> "Voxelizer":
-        """Crea un Voxelizer con i parametri reali di RaDelft."""
+        """Create a Voxelizer with RaDelft real physical axes."""
         r, a, e = radelft_default_axes()
         return cls(r, a, e)
 
     @classmethod
     def for_radial(cls) -> "Voxelizer":
         """
-        Crea un Voxelizer per RADIal.
-        Grid: [R=480, A=736, E=11] — range [0,50]m, az [-75°,75°], el [-4°,6°].
-        Usiamo assi uniformi dato che RADIal non fornisce un CalibrationTable per la griglia.
+        Create a Voxelizer for RADIal.
+        Grid: [R=480, A=736, E=11] — range [0, 50]m, az [-75°, 75°], el [-4°, 6°].
+        We use uniform axes because RADIal does not provide a calibration table for voxel axes.
         """
         R, A, E = 480, 736, 11
         range_axis     = np.linspace(0.0, 50.0, R + 1)[1:]              # (R,) in m
@@ -214,10 +215,10 @@ class Voxelizer:
 
     def voxelize(self, lidar_xyz: np.ndarray) -> np.ndarray:
         """
-        Pipeline completa: cartesiano [x,y,z] → occupancy [R, A, E].
+        Full pipeline: Cartesian [x, y, z] → occupancy [R, A, E].
 
         Args:
-            lidar_xyz: (N, 3) — coordinate cartesiane.
+            lidar_xyz: (N, 3) — Cartesian coordinates.
 
         Returns:
             cube: (R, A, E) float32.

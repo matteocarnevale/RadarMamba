@@ -1,16 +1,15 @@
 """
-Cross-Modal Alignment Pipeline — orchestratore dei 5 passi
-============================================================
-Esegue in sequenza i 5 passi descritti in Paper Section 3.2 / Fig. 2
-(blue path) per produrre:
+Cross-Modal Alignment Pipeline — 5-step orchestrator
+===================================================
+Runs the 5 steps described in Paper Section 3.2 / Fig. 2 (blue path) to produce:
     - lidar_occupancy: np.ndarray (R, A, E) float32  → ground truth
-    - fused_cloud:     np.ndarray (N, 3) float32     → cloud LiDAR+radar fuso (debug)
+    - fused_cloud:     np.ndarray (N, 3) float32     → fused LiDAR+radar cloud (debug)
 
-Uso tipico:
+Typical usage:
     pipeline = AlignmentPipeline.from_config(cfg)
     result   = pipeline.run(lidar_pts, radar_pts_xyz, calibration)
 
-    occ = result["lidar_occupancy"]   # → input GT per il training
+    occ = result["lidar_occupancy"]   # → GT input for training
 """
 
 from __future__ import annotations
@@ -28,14 +27,14 @@ from src.calibration.sensor_calibration import SensorCalibration
 
 class AlignmentPipeline:
     """
-    Orchestratore della cross-modal alignment (Fig. 2, blue path).
+    Cross-modal alignment orchestrator (Fig. 2, blue path).
 
-    Passi:
-        B1  GroundRemover     — rimozione suolo da LiDAR (Patchwork++)
-        B2  LiDARPolarTransformer — cartesiano → polare (dopo calibrazione)
-        B3  RadarLiDARFilter  — KD-Tree + fusione radar-LiDAR
-        B4  FoVAligner        — ritaglio al campo visivo comune
-        B5  Voxelizer         — griglia occupancy [R,A,E]
+    Steps:
+        B1  GroundRemover        — ground removal on LiDAR (Patchwork++)
+        B2  LiDARPolarTransformer — Cartesian → polar (after calibration)
+        B3  RadarLiDARFilter     — KD-Tree filtering + radar–LiDAR fusion
+        B4  FoVAligner           — crop to the common field of view
+        B5  Voxelizer            — occupancy grid [R, A, E]
     """
 
     def __init__(
@@ -55,11 +54,11 @@ class AlignmentPipeline:
     @classmethod
     def from_config(cls, cfg: DictConfig) -> "AlignmentPipeline":
         """
-        Costruisce la pipeline dai parametri del YAML.
+        Build the pipeline from YAML config parameters.
 
         Args:
-            cfg: OmegaConf DictConfig caricato da configs/radial.yaml
-                 o configs/radelft.yaml.
+            cfg: OmegaConf DictConfig loaded from configs/radial.yaml
+                 or configs/radelft.yaml.
         """
         pp_cfg   = cfg.preprocessing
         grid_cfg = dict(cfg.dataset.grid)
@@ -75,7 +74,7 @@ class AlignmentPipeline:
         )
 
     # ------------------------------------------------------------------
-    # Pipeline principale
+    # Main pipeline
     # ------------------------------------------------------------------
 
     def run(
@@ -86,53 +85,51 @@ class AlignmentPipeline:
         return_debug: bool = False,
     ) -> dict:
         """
-        Esegue i 5 passi di allineamento su un singolo frame.
+        Run the 5 alignment steps on a single frame.
 
         Args:
-            lidar_pts_xyz: np.ndarray, shape (N_l, 3+) — LiDAR in frame LiDAR
-                           (coordinate cartesiane x, y, z in metri).
-            radar_pts_xyz: np.ndarray, shape (N_r, 3+) — punti radar 4D già
-                           estratti da DoA, in frame radar, colonne [x, y, z, ...].
-                           Questi sono i punti radar pre-filtrati con CFAR basso
-                           (non il CFAR duro del percorso grigio di Fig. 2).
-            calibration:   SensorCalibration — trasformazione radar↔lidar.
-            return_debug:  se True, include cloud intermedi nel risultato.
+            lidar_pts_xyz: (N_l, 3+) — LiDAR in LiDAR frame (Cartesian x, y, z in meters).
+            radar_pts_xyz: (N_r, 3+) — radar 4D points already extracted by DoA, in radar frame,
+                           columns [x, y, z, ...]. These should be pre-filtered with a low CFAR
+                           threshold (not the hard CFAR from the gray path in Fig. 2).
+            calibration:   SensorCalibration — radar↔LiDAR transform.
+            return_debug:  if True, includes intermediate clouds in the output.
 
         Returns:
-            dict con chiavi:
+            Dict with keys:
                 "lidar_occupancy":  np.ndarray (R, A, E) float32  — ground truth
-                "fused_cloud":      np.ndarray (M, 3)              — cloud fuso (opt.)
-                "lidar_polar":      np.ndarray (N, 3)              — LiDAR in polari (opt.)
+                "fused_cloud":      np.ndarray (M, 3)             — fused cloud (optional)
+                "lidar_polar":      np.ndarray (N, 3)             — LiDAR in polar coords (optional)
         """
 
-        # ── Passo B1: rimozione suolo dal LiDAR ──────────────────────
+        # ── Step B1: LiDAR ground removal ────────────────────────────
         lidar_no_ground, _ = self.ground_remover.remove_ground(lidar_pts_xyz)
 
-        # ── Passo B2: trasformazione coordinate ──────────────────────
-        # Prima porta LiDAR nel frame radar con la calibrazione
+        # ── Step B2: coordinate transform ─────────────────────────────
+        # First, bring LiDAR into radar frame using calibration
         lidar_in_radar_frame = calibration.lidar_to_radar(lidar_no_ground[:, :3])
 
-        # Poi converte in coordinate polari
+        # Then convert to polar coordinates
         lidar_polar, lidar_grid_idx, lidar_valid = self.polar_transformer.transform_full(
             lidar_in_radar_frame
         )
 
-        # ── Passo B3: filtro KD-Tree radar vs LiDAR + fusione ────────
-        # I punti radar devono essere nello stesso frame del LiDAR (frame radar)
+        # ── Step B3: radar vs LiDAR KD-Tree filter + fusion ───────────
+        # Radar points must be in the same frame as LiDAR (radar frame)
         radar_pts_in_radar_frame = radar_pts_xyz[:, :3]  # già in frame radar
 
         filter_result = self.radar_lidar_filter.run(
             radar_pts_in_radar_frame,
-            lidar_in_radar_frame,   # LiDAR già in frame radar (cartesiano)
+            lidar_in_radar_frame,   # LiDAR already in radar frame (Cartesian)
             fuse=True,
         )
-        fused_cloud_xyz = filter_result["fused"]  # (M, 3) cartesiane nel frame radar
+        fused_cloud_xyz = filter_result["fused"]  # (M, 3) Cartesian in radar frame
 
-        # ── Passo B4: allineamento FoV (su cloud fuso) ───────────────
-        # Qui allineamo il cloud LiDAR (già in polari) al FoV del radar
+        # ── Step B4: FoV alignment (on LiDAR polar cloud) ─────────────
+        # Crop LiDAR (already in polar coords) to the radar FoV
         lidar_polar_fov, fov_mask = self.fov_aligner.crop_polar(lidar_polar)
 
-        # ── Passo B5: voxelizzazione → occupancy grid ─────────────────
+        # ── Step B5: voxelization → occupancy grid ────────────────────
         lidar_occupancy = self.voxelizer.from_polar(lidar_polar_fov)
 
         result: dict = {"lidar_occupancy": lidar_occupancy}

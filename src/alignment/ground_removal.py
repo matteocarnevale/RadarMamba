@@ -1,6 +1,6 @@
 """
-Passo B1 — Ground Point Removal (Patchwork++)
-===============================================
+Step B1 — Ground Point Removal (Patchwork++)
+============================================
 REF: Paper Section 3.2, Step (1)
 REF: RaDelft data_preparation.py::remove_ground_points_patchwork
 
@@ -31,47 +31,47 @@ except ImportError:
 
 class GroundRemover:
     """
-    Rimozione del suolo da punto cloud LiDAR via Patchwork++.
-    Replicates exactly what RaDelft's prepare_lidar_pointcloud does.
+    Remove ground points from LiDAR point clouds via Patchwork++.
+    Replicates exactly what RaDelft's `prepare_lidar_pointcloud` does.
     """
 
     def __init__(self, cfg: dict | None = None) -> None:
         """
         Args:
-            cfg: dizionario opzionale di parametri (override Patchwork++ defaults).
-                 Se None, usa i default di Patchwork++ (funzionano bene out-of-box).
-                 Chiavi riconosciute: sensor_height, num_iter, num_lpr,
+            cfg: Optional parameter dictionary (overrides Patchwork++ defaults).
+                 If None, uses Patchwork++ defaults (good out-of-the-box).
+                 Recognized keys: sensor_height, num_iter, num_lpr,
                  num_min_pts, th_seeds, th_dist.
         """
         self.cfg = cfg or {}
         if not PATCHWORKPP_AVAILABLE:
             import warnings
             warnings.warn(
-                "pypatchworkpp non disponibile — uso fallback sull'altezza z. "
-                "Installa con: pip install pypatchworkpp  "
-                "o da: https://github.com/url-kaist/patchwork-plusplus",
+                "pypatchworkpp is not available — falling back to a simple z-height rule. "
+                "Install with: pip install pypatchworkpp  "
+                "or from: https://github.com/url-kaist/patchwork-plusplus",
                 RuntimeWarning,
                 stacklevel=2,
             )
 
     # ------------------------------------------------------------------
-    # Patchwork++ (esatto come in RaDelft data_preparation.py)
+    # Patchwork++ (exactly as in RaDelft data_preparation.py)
     # ------------------------------------------------------------------
 
     def _patchwork_remove(self, xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Chiama Patchwork++ esattamente come in RaDelft::remove_ground_points_patchwork.
+        Call Patchwork++ exactly as in RaDelft::remove_ground_points_patchwork.
 
         Args:
-            xyz: (N, 3+) float32 — punto cloud con almeno x,y,z.
+            xyz: (N, 3+) float32 — point cloud with at least x, y, z.
 
         Returns:
-            nonground: (M, 3) — punti senza suolo.
-            ground:    (G, 3) — punti del suolo.
+            nonground: (M, 3) — non-ground points.
+            ground:    (G, 3) — ground points.
         """
         params = pypatchworkpp.Parameters()
 
-        # Override dei parametri se forniti nel cfg
+        # Override parameters if provided
         if "sensor_height" in self.cfg:
             params.sensor_height = float(self.cfg["sensor_height"])
         if "num_iter" in self.cfg:
@@ -87,7 +87,7 @@ class GroundRemover:
 
         pw = pypatchworkpp.patchworkpp(params)
 
-        # Patchwork++ vuole float32 o float64 con shape (N, 3+)
+        # Patchwork++ expects float32/float64 with shape (N, 3+)
         xyz_input = xyz[:, :3].astype(np.float32)
         pw.estimateGround(xyz_input)
 
@@ -96,38 +96,38 @@ class GroundRemover:
         return nonground, ground
 
     # ------------------------------------------------------------------
-    # Fallback sull'altezza z (solo per sviluppo senza pypatchworkpp)
+    # z-height fallback (only for development without pypatchworkpp)
     # ------------------------------------------------------------------
 
     def _height_fallback(self, xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Semplice soglia sull'altezza z come fallback.
-        RaDelft inoltre filtra z > -2 dopo Patchwork++; applichiamo solo quello.
+        Simple z-height threshold fallback.
+        RaDelft additionally filters z > -2 after Patchwork++; we apply only that.
         """
-        # Soglia conservativa: suolo sotto -1.5 m dall'origine del sensore
+        # Conservative threshold: ground below -1.5 m from sensor origin
         z_thresh = self.cfg.get("fallback_z_thresh", -1.5)
         non_ground_mask = xyz[:, 2] > z_thresh
         return xyz[non_ground_mask], xyz[~non_ground_mask]
 
     # ------------------------------------------------------------------
-    # API pubblica
+    # Public API
     # ------------------------------------------------------------------
 
     def remove_ground(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Rimuove i punti del suolo.
+        Remove ground points.
 
-        Replica esattamente la sequenza di RaDelft::prepare_lidar_pointcloud:
+        Replicates exactly RaDelft::prepare_lidar_pointcloud:
             1. remove_ground_points_patchwork (Patchwork++)
-            2. Tieni solo xyz (colonne 0:3)
-            3. Filtra punti con z > -2  (cleaning_ego_car è separato)
+            2. Keep only xyz (cols 0:3)
+            3. Filter points with z > -2  (`cleaning_ego_car` is separate)
 
         Args:
-            points: (N, 3+) — [x, y, z, ...] in coordinate cartesiane.
+            points: (N, 3+) — [x, y, z, ...] in Cartesian coordinates.
 
         Returns:
-            non_ground: (M, K) — punti non-suolo (K = numero colonne originali).
-            ground:     (G, K) — punti suolo.
+            non_ground: (M, K) — non-ground points (K = original column count).
+            ground:     (G, K) — ground points.
         """
         if len(points) == 0:
             return points.copy(), points[:0].copy()
@@ -137,7 +137,7 @@ class GroundRemover:
         else:
             non_ground_xyz, ground_xyz = self._height_fallback(points)
 
-        # Applica filtro z > -2 come in RaDelft (rimuove punti sotto strada)
+        # Apply z > -2 filter as in RaDelft (removes points below the road surface)
         # REF: data_preparation.py line: lidar_point_cloud = lidar_point_cloud[lidar_point_cloud[:, 2] > -2]
         non_ground_xyz = non_ground_xyz[non_ground_xyz[:, 2] > -2.0]
 
@@ -147,18 +147,18 @@ class GroundRemover:
         self, points: np.ndarray, ego_x_max: float = 1.0, ego_y_max: float = 1.0
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Rimozione suolo + rimozione punti carrozzeria del veicolo.
+        Ground removal + ego-vehicle point removal.
 
         REF: RaDelft::cleaning_ego_car
-            Remove points with x<1 AND |y|<1 (punti del tetto del veicolo).
+            Remove points with x<1 AND |y|<1 (vehicle roof points).
 
         Args:
             points: (N, 3+).
-            ego_x_max: soglia x per l'ego car (default 1.0 m).
-            ego_y_max: soglia |y| per l'ego car (default 1.0 m).
+            ego_x_max: x-threshold for ego-car removal (default: 1.0 m).
+            ego_y_max: |y|-threshold for ego-car removal (default: 1.0 m).
 
         Returns:
-            clean: (M, K) — punti senza suolo e senza ego car.
+            clean: (M, K) — points without ground and without ego car.
             ground: (G, K).
         """
         non_ground, ground = self.remove_ground(points)
@@ -166,7 +166,7 @@ class GroundRemover:
         if len(non_ground) == 0:
             return non_ground, ground
 
-        # Rimuovi punti ego car: x < ego_x_max AND |y| < ego_y_max
+        # Remove ego-car points: x < ego_x_max AND |y| < ego_y_max
         # REF: cleaning_ego_car in data_preparation.py
         ego_mask = (non_ground[:, 0] < ego_x_max) & (np.abs(non_ground[:, 1]) < ego_y_max)
         clean = non_ground[~ego_mask]

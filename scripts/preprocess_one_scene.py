@@ -1,24 +1,24 @@
 """
-Preprocess One Scene — debug rapido su un singolo frame/tripla
-================================================================
-Processa una singola tripla di frame e salva i tensori preprocessati.
-Verifica che la pipeline preprocessing funzioni prima del training.
+Preprocess One Scene — quick debug on a single frame/triplet
+===========================================================
+Processes a single frame triplet and saves the preprocessed tensors.
+Use this to verify the preprocessing pipeline before training.
 
-Uso (RaDelft):
+Usage (RaDelft):
     python scripts/preprocess_one_scene.py \\
         --config configs/radelft.yaml \\
         --scene_path data/raw/radelft/Scene1 \\
         --frame_idx 10 \\
         --out_dir /tmp/debug_preprocess
 
-Uso (RADIal):
+Usage (RADIal):
     python scripts/preprocess_one_scene.py \\
         --config configs/radial.yaml \\
         --scene_path data/raw/radial \\
         --sample_id 100 \\
         --out_dir /tmp/debug_preprocess
 
-Checklist di debug (verifica queste condizioni prima del training):
+Debug checklist (verify these conditions before training):
     [ ] radar_cube.npy shape == (6, R, A, E) e dtype == float32
     [ ] rad_map.npy    shape == (D, R, A) e dtype == float32
     [ ] lidar_occ.npy  shape == (R, A, E) e somma > 0 (non è tutta zero!)
@@ -40,7 +40,7 @@ from omegaconf import OmegaConf
 
 
 def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
-    """Debug per una singola tripla RaDelft."""
+    """Debug a single RaDelft frame triplet."""
     import scipy.io
     from src.datasets.radelft_dataset import (
         RaDelftDataset, _rotation_matrix_z,
@@ -53,7 +53,7 @@ def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
     rods_dir  = scene_path / "rosDS"
     lidar_dir = rods_dir / "rslidar_points_clean"
 
-    # Costruisci voxelizer
+    # Build voxelizer
     range_axis, az_axis, el_axis = radelft_default_axes()
     vox = Voxelizer(range_axis, az_axis, el_axis)
     E, R_ax, A = len(el_axis), len(range_axis), len(az_axis)
@@ -61,7 +61,7 @@ def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
 
     print(f"Grid: R={R_ax}, A={A}, E={E}, D={D}")
 
-    # Crea istanza del dataset per usare i metodi
+    # Create a dataset instance to reuse helper methods
     ds = RaDelftDataset.__new__(RaDelftDataset)
     ds.range_axis     = range_axis
     ds.azimuth_axis   = az_axis
@@ -71,7 +71,7 @@ def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
     ds.norm_vel  = True
     ds.vel_max   = 5.0
 
-    # Tripla di frame: [frame_idx-2, frame_idx-1, frame_idx]
+    # Frame triplet: [frame_idx-2, frame_idx-1, frame_idx]
     frame_tensors = []
     for offset in [2, 1, 0]:
         fidx = max(1, frame_idx - offset)
@@ -87,12 +87,12 @@ def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
         if offset == 0:
             rad_map_t = rad_map
 
-    # Fudi i 3 frame in (R, A, E, 6)
+    # Fuse the 3 frames into (R, A, E, 6)
     radar_cube_rae6 = np.concatenate(
         [frame_tensors[2], frame_tensors[1], frame_tensors[0]], axis=-1
     )
 
-    # Trova il LiDAR più vicino al frame_idx
+    # Pick a LiDAR file near frame_idx (simple heuristic for debug)
     import os
     lidar_files = sorted(os.listdir(str(lidar_dir)))
     if lidar_files:
@@ -110,7 +110,7 @@ def process_radelft_scene(cfg, scene_path: Path, frame_idx: int, out_dir: Path):
 
 
 def process_radial_scene(cfg, root_path: Path, sample_id: int, out_dir: Path):
-    """Debug per un singolo sample RADIal."""
+    """Debug a single RADIal sample."""
     from src.datasets.radial_dataset import RADIalDataset
     from src.alignment.voxelization import Voxelizer
 
@@ -156,16 +156,16 @@ def main():
         sid = args.sample_id or args.frame_idx
         radar_cube, rad_map, lidar_occ = process_radial_scene(cfg, scene_path, sid, out_dir)
     else:
-        raise ValueError(f"Dataset non supportato: {dataset_name}")
+        raise ValueError(f"Unsupported dataset: {dataset_name}")
 
-    # Salva
+    # Save
     np.save(out_dir / "radar_cube.npy", radar_cube)
     np.save(out_dir / "rad_map.npy",    rad_map)
     np.save(out_dir / "lidar_occ.npy",  lidar_occ)
     np.savez(out_dir / "sample.npz",
              radar_cube=radar_cube, rad_map=rad_map, lidar_occ=lidar_occ)
 
-    # Statistiche
+    # Stats
     from src.utils.visualization import print_preprocessing_stats
     print_preprocessing_stats(lidar_occ, radar_cube, rad_map)
 
@@ -176,9 +176,9 @@ def main():
           f"  ({100*lidar_occ.mean():.3f}% occupancy)")
 
     if lidar_occ.sum() == 0:
-        print("  ⚠️  ATTENZIONE: lidar_occ è tutta zero! Verifica la pipeline LiDAR.")
+        print("  ⚠️  WARNING: lidar_occ is all zeros! Check the LiDAR pipeline.")
     if np.isnan(radar_cube).any():
-        print("  ⚠️  ATTENZIONE: radar_cube contiene NaN!")
+        print("  ⚠️  WARNING: radar_cube contains NaN!")
     if not args.no_viz:
         from src.utils.visualization import plot_bev_occupancy, plot_radar_cube_channels
         plot_bev_occupancy(lidar_occ, title="LiDAR Occupancy GT",
