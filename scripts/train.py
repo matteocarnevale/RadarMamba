@@ -14,11 +14,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Helps reduce allocator fragmentation for large 4D radar tensors.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 
 import torch
 import torch.nn as nn
@@ -93,7 +98,7 @@ def train_one_epoch(
     optimizer:  torch.optim.Optimizer,
     criterion:  FocalLoss,
     device:     torch.device,
-    scaler:     torch.cuda.amp.GradScaler,
+    scaler:     torch.amp.GradScaler,
     epoch:      int,
     log_every:  int = 50,
 ) -> float:
@@ -107,9 +112,32 @@ def train_one_epoch(
         rad_map    = batch["rad_map"].to(device, non_blocking=True)     # (B, D, R, A)
         gt_occ     = batch["lidar_occ"].to(device, non_blocking=True)   # (B, R, A, E)
 
-        with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
-            logits = model(radar_cube, rad_map)                         # (B, R, A, E)
-            loss   = criterion(logits, gt_occ)
+        try:
+            with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
+                logits = model(radar_cube, rad_map)                     # (B, R, A, E)
+                loss   = criterion(logits, gt_occ)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "CUDNN_STATUS_NOT_INITIALIZED" in msg and device.type == "cuda":
+                if torch.backends.cudnn.enabled:
+                    warnings.warn(
+                        "cuDNN failed to initialize in forward pass. "
+                        "Disabling cuDNN globally and retrying this step.",
+                        RuntimeWarning,
+                    )
+                    torch.backends.cudnn.enabled = False
+                    torch.cuda.empty_cache()
+                    with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
+                        logits = model(radar_cube, rad_map)
+                        loss   = criterion(logits, gt_occ)
+                else:
+                    raise RuntimeError(
+                        "cuDNN failed to initialize during forward pass even after fallback. "
+                        "This is usually GPU memory pressure. "
+                        "Lower `training.batch_size` (recommended: 2 on 1 GPU) and retry."
+                    ) from exc
+            else:
+                raise
 
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
@@ -208,6 +236,16 @@ def main():
         device = torch.device(args.device)
     print(f"Device: {device}")
 
+    # Paper setup uses 8 GPUs. On 1x24GB, RHSS(8 scans) can exceed memory;
+    # default to 4 scans unless the user already set RHSS_N_PATTERNS.
+    if device.type == "cuda" and "RHSS_N_PATTERNS" not in os.environ:
+        os.environ["RHSS_N_PATTERNS"] = "4"
+        warnings.warn(
+            "RHSS_N_PATTERNS not set: defaulting to 4 for single-GPU memory safety. "
+            "Set RHSS_N_PATTERNS=8 to match paper behavior if memory allows.",
+            RuntimeWarning,
+        )
+
     ckpt_dir = Path(cfg.checkpoint.dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -244,7 +282,7 @@ def main():
 
     # Mixed precision
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
-    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler  = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     # Physical axes for metrics (occupancy → point cloud)
     range_axis, az_axis, el_axis = axes_for_dataset(cfg)
@@ -268,9 +306,16 @@ def main():
         print(f"Epoch {epoch+1}/{cfg.training.epochs}  "
               f"lr={scheduler.get_last_lr()[0]:.2e}")
 
+        # Backward-compatible: prefer training.log_every_n_steps, fall back to logging.log_every_n_steps.
+        log_every = 50
+        if OmegaConf.select(cfg, "training.log_every_n_steps") is not None:
+            log_every = int(cfg.training.log_every_n_steps)
+        elif OmegaConf.select(cfg, "logging.log_every_n_steps") is not None:
+            log_every = int(cfg.logging.log_every_n_steps)
+
         train_loss = train_one_epoch(
             model, train_loader, optimizer, criterion, device, scaler,
-            epoch, log_every=cfg.logging.log_every_n_steps,
+            epoch, log_every=log_every,
         )
         scheduler.step()
 

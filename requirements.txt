@@ -17,8 +17,8 @@ torchvision>=0.16.0
 # Install AFTER torch/CUDA are set up:
 #   pip install mamba-ssm causal-conv1d
 # Uncomment if your environment supports it:
-# mamba-ssm>=1.2.0
-# causal-conv1d>=1.2.0
+#mamba-ssm>=1.2.0
+#causal-conv1d>=1.2.0
 
 # --- Tensor / math ---
 numpy>=1.24.0

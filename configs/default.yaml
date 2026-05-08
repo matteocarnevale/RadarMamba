@@ -14,7 +14,7 @@ training:
   lr: 0.001
   lr_scheduler: cosine
   epochs: 50
-  batch_size: 16
+  batch_size: 1
   num_workers: 4
   pin_memory: true
   mixed_precision: true

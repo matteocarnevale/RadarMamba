@@ -31,18 +31,7 @@ import os
 
 import torch
 import torch.nn as nn
-
-# Controlla se forzare il fallback via variabile d'ambiente
-_FORCE_FALLBACK = os.environ.get("MAMBA_FORCE_FALLBACK", "0") == "1"
-
-# Prova a importare mamba-ssm (richiede nvcc + CUDA)
-MAMBA_AVAILABLE = False
-if not _FORCE_FALLBACK:
-    try:
-        from mamba_ssm import Mamba
-        MAMBA_AVAILABLE = True
-    except (ImportError, Exception):
-        pass
+from mamba_ssm import Mamba
 
 
 class MambaSSM(nn.Module):
@@ -69,29 +58,14 @@ class MambaSSM(nn.Module):
         super().__init__()
         self.d_model = d_model
 
-        if MAMBA_AVAILABLE:
-            self.ssm = Mamba(
-                d_model=d_model,
-                d_state=d_state,
-                d_conv=d_conv,
-                expand=expand,
-            )
-            self._backend = "mamba_ssm"
-        else:
-            import warnings
-            warnings.warn(
-                "mamba-ssm non disponibile — uso LSTM bidirezionale.\n"
-                "Per installare mamba-ssm:\n"
-                "  1. export PATH=/usr/local/cuda-XX.X/bin:$PATH  (aggiungi nvcc)\n"
-                "  2. pip install mamba-ssm causal-conv1d\n"
-                "  oppure: pip install git+https://github.com/state-spaces/mamba.git\n"
-                "Per sopprimere questo warning: export MAMBA_FORCE_FALLBACK=1",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            self.ssm = MambaFallback(d_model, d_state, expand)
-            self._backend = "lstm_fallback"
-
+        self.ssm = Mamba(
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+        )            
+        self._backend = "mamba_ssm"
+            
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:

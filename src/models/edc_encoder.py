@@ -23,6 +23,8 @@ quindi funziona sia per RADIal (E=11) che per RaDelft (E=34).
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -41,6 +43,7 @@ class EDCEncoder(nn.Module):
         out_channels: int = 64,
     ) -> None:
         super().__init__()
+        self._warned_cudnn_fallback = False
         mid = out_channels // 2    # 32 per ramo
 
         # ── Ramo Elevation ─────────────────────────────────────────────
@@ -94,6 +97,29 @@ class EDCEncoder(nn.Module):
         )
 
     # ------------------------------------------------------------------
+    def _run_3d_block(self, block: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """
+        Retry Conv3D stack without cuDNN when cuDNN init fails.
+        This keeps training alive on constrained GPUs where cuDNN may fail
+        during the first 3D kernel initialization.
+        """
+        try:
+            return block(x)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if x.is_cuda and "CUDNN_STATUS_NOT_INITIALIZED" in msg:
+                torch.cuda.empty_cache()
+                with torch.backends.cudnn.flags(enabled=False):
+                    out = block(x)
+                if not self._warned_cudnn_fallback:
+                    warnings.warn(
+                        "cuDNN initialization failed in EDC Conv3D; "
+                        "falling back to non-cuDNN Conv3D kernels.",
+                        RuntimeWarning,
+                    )
+                    self._warned_cudnn_fallback = True
+                return out
+            raise
 
     def forward(self, radar_cube: torch.Tensor) -> torch.Tensor:
         """
@@ -111,14 +137,14 @@ class EDCEncoder(nn.Module):
         x = radar_cube.permute(0, 1, 4, 2, 3).contiguous()    # (B, 6, E, R, A)
 
         # ── Ramo Elevation ─────────────────────────────────────────────
-        el_feat = self.elevation_3d(x)                          # (B, 32, E', R, A)
+        el_feat = self._run_3d_block(self.elevation_3d, x)      # (B, 32, E', R, A)
         el_feat = self.elevation_pool(el_feat).squeeze(2)       # (B, 32, R, A)
         el_feat = self.elevation_2d(el_feat)                    # (B, 32, R, A)
 
         # ── Ramo Doppler ───────────────────────────────────────────────
         # Estrai canali Doppler: 1, 3, 5  → (B, 3, E, R, A)
         dop = x[:, 1::2, :, :, :]                              # (B, 3, E, R, A)
-        dop_feat = self.doppler_3d(dop)                         # (B, 32, E', R, A)
+        dop_feat = self._run_3d_block(self.doppler_3d, dop)     # (B, 32, E', R, A)
         dop_feat = self.doppler_pool(dop_feat).squeeze(2)       # (B, 32, R, A)
         dop_feat = self.doppler_2d(dop_feat)                    # (B, 32, R, A)
 

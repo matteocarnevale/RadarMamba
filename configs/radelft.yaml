@@ -104,7 +104,7 @@ training:
   lr: 0.001
   lr_scheduler: cosine
   epochs: 50
-  batch_size: 16
+  batch_size: 1
 
   focal_loss:
     alpha: 0.995

@@ -27,11 +27,13 @@ extract global and local features from radar point clouds."
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import List
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from src.models.mamba_core import MambaSSM
 
@@ -126,14 +128,18 @@ class RHSSModule(nn.Module):
         d_state: int = 16,
         d_conv:  int = 4,
         expand:  int = 2,
+        use_checkpoint: bool = True,
     ) -> None:
         super().__init__()
         self.d_model = d_model
+        self.use_checkpoint = use_checkpoint
+        env_n_patterns = int(os.getenv("RHSS_N_PATTERNS", "8"))
+        self.n_patterns = max(1, min(8, env_n_patterns))
 
-        # 8 SSM indipendenti (uno per pattern)
+        # SSM indipendenti (uno per pattern). Default: 8 (paper).
         self.ssm_list = nn.ModuleList([
             MambaSSM(d_model, d_state, d_conv, expand)
-            for _ in range(8)
+            for _ in range(self.n_patterns)
         ])
 
         # Proiezione output: torna a d_model dopo aggregazione
@@ -188,15 +194,24 @@ class RHSSModule(nn.Module):
 
         # Ottieni pattern di scansione (cached, su CPU poi sposta)
         patterns_cpu = _cached_patterns(H, W)
-        patterns = [p.to(dev) for p in patterns_cpu]
+        patterns = [p.to(dev) for p in patterns_cpu[: self.n_patterns]]
 
         # Applica ogni SSM sul proprio pattern e accumula
         agg = torch.zeros_like(x)
         for pattern, ssm in zip(patterns, self.ssm_list):
-            agg = agg + self._scan_and_process(x, pattern, ssm)
+            if self.training and self.use_checkpoint and x.requires_grad:
+                # Recompute each scan in backward to reduce activation memory.
+                scan_out = checkpoint(
+                    lambda inp, _pattern=pattern, _ssm=ssm: self._scan_and_process(inp, _pattern, _ssm),
+                    x,
+                    use_reentrant=False,
+                )
+            else:
+                scan_out = self._scan_and_process(x, pattern, ssm)
+            agg = agg + scan_out
 
-        # Media delle 8 uscite
-        agg = agg / 8.0
+        # Media delle uscite dei pattern usati (paper: 8).
+        agg = agg / float(self.n_patterns)
 
         # Proiezione output: in channel-last per Linear
         agg_flat = agg.permute(0, 2, 3, 1).reshape(B, H * W, C)   # (B, L, C)
